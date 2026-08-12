@@ -3,6 +3,7 @@ const feedbackState = {
   roots: [],
   activeId: null,
   query: "",
+  votePending: new Set(),
 };
 
 const feedbackElements = {
@@ -39,7 +40,7 @@ function toast(message, type = "info") {
 
 function requireLogin() {
   if (window.libraryAuth.user) return true;
-  toast("請先登入，再建立或回覆討論。", "error");
+  toast("請先登入，再建立、回覆或投票。", "error");
   window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error"));
   return false;
 }
@@ -99,10 +100,59 @@ function renderFeedback() {
 }
 
 function messageMarkup(message, { root = false } = {}) {
+  const score = Number(message.score) || 0;
+  const upCount = Number(message.upCount) || 0;
+  const downCount = Number(message.downCount) || 0;
+  const pending = feedbackState.votePending.has(message.id);
   return `<article class="thread-message${root ? " root" : ""}">
     <header><img src="${escapeHtml(safeAvatar(message.author))}" alt=""><div><strong>${escapeHtml(message.author?.public_display_name || "讀者")}</strong><time>${new Date(message.created_at).toLocaleString("zh-TW")}</time></div>${roleBadge(message.author)}</header>
     <p>${escapeHtml(message.content)}</p>
+    <div class="feedback-vote-actions" role="group" aria-label="這則${root ? "討論" : "回覆"}的評價">
+      <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▲</span> 讚 <b>${upCount}</b></button>
+      <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▼</span> 倒讚 <b>${downCount}</b></button>
+      <span class="feedback-vote-score" aria-label="淨分 ${score}">淨分 ${score >= 0 ? "+" : ""}${score}</span>
+    </div>
   </article>`;
+}
+
+function replaceFeedbackMessage(updated) {
+  feedbackState.messages = feedbackState.messages.map((message) => message.id === updated.id ? updated : message);
+}
+
+function renderFeedbackViews() {
+  rebuildThreads();
+  renderFeedback();
+  if (feedbackState.activeId) openThread(feedbackState.activeId, { updateUrl: false });
+}
+
+function optimisticFeedbackVote(message, nextVote) {
+  let upCount = Number(message.upCount) || 0;
+  let downCount = Number(message.downCount) || 0;
+  if (message.viewerVote === "up") upCount = Math.max(0, upCount - 1);
+  if (message.viewerVote === "down") downCount = Math.max(0, downCount - 1);
+  if (nextVote === "up") upCount += 1;
+  if (nextVote === "down") downCount += 1;
+  return { ...message, upCount, downCount, score: upCount - downCount, viewerVote: nextVote === "none" ? null : nextVote };
+}
+
+async function toggleFeedbackVote(feedbackId, voteType) {
+  if (!requireLogin() || feedbackState.votePending.has(feedbackId)) return;
+  const message = feedbackState.messages.find((item) => item.id === feedbackId);
+  if (!message) return;
+  const nextVote = message.viewerVote === voteType ? "none" : voteType;
+  feedbackState.votePending.add(feedbackId);
+  replaceFeedbackMessage(optimisticFeedbackVote(message, nextVote));
+  renderFeedbackViews();
+  try {
+    const result = await window.libraryApi.post(`/feedback/${encodeURIComponent(feedbackId)}/vote`, { voteType: nextVote });
+    if (result.message) replaceFeedbackMessage(result.message);
+  } catch (error) {
+    replaceFeedbackMessage(message);
+    toast(error.message, "error");
+  } finally {
+    feedbackState.votePending.delete(feedbackId);
+    renderFeedbackViews();
+  }
 }
 
 function openThread(id, { updateUrl = true } = {}) {
@@ -152,6 +202,10 @@ function wireFeedbackEvents() {
   feedbackElements.list.addEventListener("click", (event) => {
     const card = event.target.closest("[data-thread-id]");
     if (card) openThread(card.dataset.threadId);
+  });
+  feedbackElements.threadContent.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-feedback-vote]");
+    if (button) toggleFeedbackVote(button.dataset.feedbackId, button.dataset.feedbackVote);
   });
   document.getElementById("new-feedback-button").addEventListener("click", () => {
     if (!requireLogin()) return;

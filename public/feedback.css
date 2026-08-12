@@ -34,6 +34,14 @@
 .thread-shell h2 { margin:5px 40px 28px 0; font:700 clamp(30px,5vw,48px)/1.08 var(--serif); }
 .thread-message { padding:17px 0; border-bottom:1px solid #d9cdbb; }.thread-message.root { padding:20px; background:#e7ddce; border-left:4px solid var(--green); }
 .thread-message header { display:flex; align-items:center; gap:10px; }.thread-message header img { width:34px;height:34px;border-radius:50%;object-fit:cover; }.thread-message header div { display:grid; }.thread-message header time { color:var(--muted);font-size:9px; }.thread-message p { margin:13px 0 0; white-space:pre-wrap; font:15px/1.8 var(--serif); }
+.feedback-vote-actions { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-top:15px; }
+.feedback-vote-actions button { min-height:38px; border:1px solid #b9aa95; background:rgba(255,255,255,.45); color:#405047; padding:7px 12px; font:700 11px var(--sans); cursor:pointer; transition:background .18s,border-color .18s,color .18s,transform .18s; }
+.feedback-vote-actions button:hover:not(:disabled),.feedback-vote-actions button:focus-visible { border-color:var(--green); transform:translateY(-1px); outline:0; }
+.feedback-vote-actions button.active { border-color:var(--green); background:var(--green); color:#fff8eb; }
+.feedback-vote-actions button.down.active { border-color:#963b2b; background:#963b2b; }
+.feedback-vote-actions button:disabled { cursor:wait; opacity:.58; }
+.feedback-vote-actions b { margin-left:3px; font-variant-numeric:tabular-nums; }
+.feedback-vote-score { margin-left:3px; color:var(--muted); font:700 10px var(--sans); letter-spacing:.04em; }
 .thread-divider { margin:26px 0 7px; display:flex; align-items:center; gap:12px; color:var(--muted); font-size:10px; letter-spacing:.1em; }.thread-divider::after { content:""; height:1px; flex:1; background:#d4c7b5; }
 .thread-replies { display:grid; }.thread-no-replies { color:var(--muted); text-align:center; padding:25px; }
 .thread-reply-form { margin-top:24px; display:grid; gap:9px; padding-top:20px; border-top:2px solid var(--green); }.thread-reply-form label { font-weight:800; }.thread-reply-form textarea { resize:vertical; min-height:95px; border:1px solid #bcae9a; background:#fffdf8; padding:12px; font:14px/1.6 var(--sans); }.thread-reply-form button { justify-self:end; }
@@ -47,5 +55,6 @@
   .feedback-workspace { padding:50px 16px 70px; }.feedback-search kbd { display:none; }
   .feedback-card { grid-template-columns:4px 1fr; gap:13px; padding:19px 0; }.feedback-card-count { grid-column:2; border:0; padding:2px 0 0; display:flex; align-items:center; gap:5px; }.feedback-card-count b { font-size:18px; }.feedback-card-count i { margin:0 0 0 auto; }
   .feedback-thread-dialog { width:100vw; max-width:none; max-height:92dvh; margin:auto 0 0; }.thread-shell { padding:35px 18px calc(22px + env(safe-area-inset-bottom)); }.thread-shell h2 { font-size:32px; }.thread-message.root { padding:16px; }
+  .feedback-vote-actions button { min-height:44px; padding:9px 13px; }
   .feedback-create-dialog { width:calc(100vw - 18px); }
 }

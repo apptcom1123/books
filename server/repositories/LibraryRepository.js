@@ -114,18 +114,12 @@ export class LibraryRepository {
 
   async setRating(bookId, userId, rating) {
     this.requireBook(bookId);
-    if (rating === 0) {
-      const { error } = await this.db.from("book_ratings").delete().eq("book_id", bookId).eq("user_id", userId);
-      if (error) throw error;
-    } else {
-      const { error } = await this.db.from("book_ratings").upsert({
-        book_id: bookId,
-        user_id: userId,
-        rating,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "book_id,user_id" });
-      if (error) throw error;
-    }
+    if (!userId) throw Object.assign(new Error("AUTH_REQUIRED"), { status: 401 });
+    const { error } = await this.db.rpc("set_library_book_rating", {
+      p_book_id: bookId,
+      p_rating: rating,
+    });
+    if (error) throw error;
     return this.getBook(bookId, userId);
   }
 
@@ -208,23 +202,30 @@ export class LibraryRepository {
     const repliesByAnnotation = new Map(ids.map((id) => [id, []]));
     const replyVotes = byKey(replyVotesResult.data || [], "reply_id");
     for (const reply of replies) {
-      const interaction = replyVotes.get(reply.id) || { score: 0, viewer_vote: null };
+      const interaction = replyVotes.get(reply.id) || { score: 0, up_count: 0, down_count: 0, viewer_vote: null };
       repliesByAnnotation.get(reply.annotation_id)?.push({
         ...reply,
         author: profiles.get(reply.author_id) || { public_display_name: "讀者", role: "user" },
         isOwner: reply.author_id === userId,
         score: number(interaction.score),
+        upCount: number(interaction.up_count),
+        downCount: number(interaction.down_count),
         viewerVote: interaction.viewer_vote || null,
       });
     }
+    for (const annotationReplies of repliesByAnnotation.values()) {
+      annotationReplies.sort((a, b) => b.score - a.score || b.upCount - a.upCount || new Date(b.created_at) - new Date(a.created_at));
+    }
     return annotations.map((annotation) => {
-      const votes = votesByAnnotation.get(annotation.id) || { score: 0, viewer_vote: null };
+      const votes = votesByAnnotation.get(annotation.id) || { score: 0, up_count: 0, down_count: 0, viewer_vote: null };
       const favorites = favoritesByAnnotation.get(annotation.id) || { favorite_count: 0, viewer_favorite: false };
       return {
         ...annotation,
         author: profiles.get(annotation.author_id) || { public_display_name: "讀者", role: "user" },
         isOwner: annotation.author_id === userId,
         score: number(votes.score),
+        upCount: number(votes.up_count),
+        downCount: number(votes.down_count),
         viewerVote: votes.viewer_vote || null,
         favoriteCount: number(favorites.favorite_count),
         viewerFavorite: Boolean(favorites.viewer_favorite),
@@ -322,6 +323,7 @@ export class LibraryRepository {
 
   async replyToAnnotation(annotationId, userId, input) {
     const content = cleanText(input.content, 2000);
+    const parentReplyId = cleanText(input.parentReplyId, 100) || null;
     if (!content) throw Object.assign(new Error("INVALID_REPLY"), { status: 400 });
     const { data: annotation, error: annotationError } = await this.db
       .from("book_annotations")
@@ -332,9 +334,16 @@ export class LibraryRepository {
     if (annotation.status !== "active" || (annotation.visibility !== "public" && annotation.author_id !== userId)) {
       throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
     }
+    if (parentReplyId) {
+      const { data: parent, error: parentError } = await this.db.from("book_annotation_replies")
+        .select("id").eq("id", parentReplyId).eq("annotation_id", annotationId).eq("status", "active").maybeSingle();
+      if (parentError) throw parentError;
+      if (!parent) throw Object.assign(new Error("REPLY_NOT_FOUND"), { status: 404 });
+    }
     const { error } = await this.db.from("book_annotation_replies").insert({
       id: crypto.randomUUID(),
       annotation_id: annotationId,
+      parent_reply_id: parentReplyId,
       author_id: userId,
       content,
     });
@@ -535,12 +544,43 @@ export class LibraryRepository {
       .limit(200);
     if (error) throw error;
     const rows = data || [];
-    const profiles = await this.userRepository.publicProfiles(rows.map((row) => row.author_id));
-    return rows.map((row) => ({
-      ...row,
-      author: profiles.get(row.author_id) || { public_display_name: "讀者", role: "user" },
-      isOwner: row.author_id === userId,
-    }));
+    const [profiles, voteStatsResult] = await Promise.all([
+      this.userRepository.publicProfiles(rows.map((row) => row.author_id)),
+      rows.length
+        ? this.db.rpc("get_library_feedback_vote_stats", { p_feedback_ids: rows.map((row) => row.id) })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (voteStatsResult.error) throw voteStatsResult.error;
+    const voteStats = byKey(voteStatsResult.data || [], "feedback_id");
+    return rows.map((row) => {
+      const interaction = voteStats.get(row.id) || { score: 0, up_count: 0, down_count: 0, viewer_vote: null };
+      return {
+        ...row,
+        author: profiles.get(row.author_id) || { public_display_name: "讀者", role: "user" },
+        isOwner: row.author_id === userId,
+        score: number(interaction.score),
+        upCount: number(interaction.up_count),
+        downCount: number(interaction.down_count),
+        viewerVote: interaction.viewer_vote || null,
+      };
+    });
+  }
+
+  async voteFeedback(feedbackId, userId, voteType) {
+    if (!["up", "down", "none"].includes(voteType)) throw Object.assign(new Error("INVALID_VOTE"), { status: 400 });
+    const { data: feedback, error: feedbackError } = await this.db
+      .from("library_feedback")
+      .select("id,status")
+      .eq("id", feedbackId)
+      .maybeSingle();
+    if (feedbackError) throw feedbackError;
+    if (!feedback || feedback.status !== "active") throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
+    const operation = voteType === "none"
+      ? this.db.from("library_feedback_votes").delete().eq("feedback_id", feedbackId).eq("user_id", userId)
+      : this.db.from("library_feedback_votes").upsert({ feedback_id: feedbackId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "feedback_id,user_id" });
+    const { error } = await operation;
+    if (error) throw error;
+    return (await this.listFeedback(userId)).find((item) => item.id === feedbackId);
   }
 
   async createFeedback(userId, input) {

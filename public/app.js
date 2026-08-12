@@ -15,6 +15,7 @@ const state = {
   reviewRealtimeStop: null,
   reviewRealtimeBookId: null,
   reviewRefreshTimer: null,
+  ratingPending: new Set(),
 };
 
 const elements = {
@@ -60,10 +61,11 @@ function renderSkeletons() {
 
 function bookCard(book) {
   const sourceCode = book.source === "Standard Ebooks" ? "SE" : "PG";
+  const ratingPending = state.ratingPending.has(book.id);
   const stars = Array.from({ length: 5 }, (_, index) => {
     const value = index + 1;
     const active = value <= (book.viewer.rating || 0) ? " active" : "";
-    return `<button class="star${active}" type="button" data-action="rate" data-book-id="${book.id}" data-rating="${value}" aria-label="給 ${value} 顆星">★</button>`;
+    return `<button class="star${active}" type="button" data-action="rate" data-book-id="${book.id}" data-rating="${value}" aria-label="給 ${value} 顆星" aria-pressed="${value <= (book.viewer.rating || 0)}"${ratingPending ? ' disabled aria-busy="true"' : ""}>★</button>`;
   }).join("");
   const progress = book.viewer.progress?.percentage > 0
     ? `<span class="continue-badge">讀到 ${Math.round(book.viewer.progress.percentage)}%</span>`
@@ -185,14 +187,33 @@ async function loadBooks({ append = false } = {}) {
 async function rateBook(bookId, rating) {
   if (!requireLogin()) return;
   const book = state.books.find((item) => item.id === bookId);
-  const nextRating = book?.viewer.rating === rating ? 0 : rating;
+  if (!book || state.ratingPending.has(bookId)) return;
+  const previousRating = Number(book.viewer.rating || 0);
+  const previousMetrics = { ...book.metrics };
+  const nextRating = previousRating === rating ? 0 : rating;
+  const previousCount = Number(book.metrics.ratingCount || 0);
+  const previousTotal = Number(book.metrics.averageRating || 0) * previousCount;
+  const nextCount = Math.max(0, previousCount + (previousRating ? 0 : nextRating ? 1 : 0) - (previousRating && !nextRating ? 1 : 0));
+  const nextTotal = Math.max(0, previousTotal - previousRating + nextRating);
+
+  state.ratingPending.add(bookId);
+  book.viewer.rating = nextRating;
+  book.metrics.ratingCount = nextCount;
+  book.metrics.averageRating = nextCount ? nextTotal / nextCount : 0;
+  renderBooks();
   try {
     const result = await window.libraryApi.put(`/books/${encodeURIComponent(bookId)}/rating`, { rating: nextRating });
     Object.assign(book.metrics, result.metrics);
     Object.assign(book.viewer, result.viewer);
-    renderBooks();
     toast(nextRating ? `已給《${book.title_zh}》${nextRating} 顆星` : "已取消評分");
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    book.viewer.rating = previousRating;
+    Object.assign(book.metrics, previousMetrics);
+    toast(`評分未儲存：${error.message}`, "error");
+  } finally {
+    state.ratingPending.delete(bookId);
+    renderBooks();
+  }
 }
 
 async function toggleFavorite(bookId) {

@@ -21,4 +21,13 @@ router.post("/", requireAuth, async (req, res, next) => {
   }
 });
 
+router.post("/:feedbackId/vote", requireAuth, async (req, res, next) => {
+  try {
+    const message = await req.repositories.library.voteFeedback(req.params.feedbackId, req.user.userId, req.body?.voteType);
+    res.json({ message });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;
