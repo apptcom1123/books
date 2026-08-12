@@ -1,5 +1,7 @@
 import crypto from "node:crypto";
 
+const ANNOTATION_CLUSTER_SIZE = 5;
+
 function number(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -236,17 +238,29 @@ export class LibraryRepository {
 
   async createAnnotation(bookId, userId, input) {
     this.requireBook(bookId);
+    const anchorOffsetStart = Number(input.anchorOffsetStart);
+    const anchorOffsetEnd = Number(input.anchorOffsetEnd);
+    const validOffsets = Number.isSafeInteger(anchorOffsetStart)
+      && Number.isSafeInteger(anchorOffsetEnd)
+      && anchorOffsetStart >= 0
+      && anchorOffsetEnd >= anchorOffsetStart
+      && anchorOffsetEnd <= 50_000_000;
     const payload = {
       id: crypto.randomUUID(),
       book_id: bookId,
       author_id: userId,
       chapter_href: cleanText(input.chapterHref, 600),
       cfi_range: cleanText(input.cfiRange, 1400),
+      anchor_offset_start: anchorOffsetStart,
+      anchor_offset_end: anchorOffsetEnd,
+      cluster_key: Math.floor(anchorOffsetStart / ANNOTATION_CLUSTER_SIZE),
       quote: cleanText(input.quote, 600),
       content: cleanText(input.content, 2000),
       visibility: input.visibility === "private" ? "private" : "public",
     };
-    if (!payload.cfi_range || !payload.content) throw Object.assign(new Error("INVALID_ANNOTATION"), { status: 400 });
+    if (!payload.cfi_range || !payload.content || !validOffsets) {
+      throw Object.assign(new Error("INVALID_ANNOTATION"), { status: 400 });
+    }
     const { data, error } = await this.db.from("book_annotations").insert(payload).select("*").single();
     if (error) throw error;
     return (await this.hydrateAnnotations([data], userId))[0];
@@ -535,13 +549,15 @@ export class LibraryRepository {
     };
   }
 
-  async listFeedback(userId = null) {
-    const { data, error } = await this.db
+  async listFeedback(userId = null, rootId = null) {
+    let query = this.db
       .from("library_feedback")
       .select("*")
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(200);
+    if (rootId) query = query.or(`id.eq.${rootId},parent_id.eq.${rootId}`);
+    const { data, error } = await query;
     if (error) throw error;
     const rows = data || [];
     const [profiles, voteStatsResult] = await Promise.all([
@@ -570,7 +586,7 @@ export class LibraryRepository {
     if (!["up", "down", "none"].includes(voteType)) throw Object.assign(new Error("INVALID_VOTE"), { status: 400 });
     const { data: feedback, error: feedbackError } = await this.db
       .from("library_feedback")
-      .select("id,status")
+      .select("id,parent_id,status")
       .eq("id", feedbackId)
       .maybeSingle();
     if (feedbackError) throw feedbackError;
@@ -580,7 +596,7 @@ export class LibraryRepository {
       : this.db.from("library_feedback_votes").upsert({ feedback_id: feedbackId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "feedback_id,user_id" });
     const { error } = await operation;
     if (error) throw error;
-    return (await this.listFeedback(userId)).find((item) => item.id === feedbackId);
+    return (await this.listFeedback(userId, feedback.parent_id || feedback.id)).find((item) => item.id === feedbackId);
   }
 
   async createFeedback(userId, input) {

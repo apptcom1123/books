@@ -13,6 +13,7 @@
   <script src="/auth.js" defer></script>
   <script src="/api.js" defer></script>
   <script src="/realtime.js" defer></script>
+  <script src="/ux.js" defer></script>
   <script src="/reader.js" defer></script>
 </head>
 <body class="reader-shell">
@@ -21,7 +22,6 @@
     <button id="toc-toggle" class="reader-icon" type="button" aria-label="開啟目錄">☰</button>
     <div class="reader-title"><strong id="book-title">正在取書…</strong><small id="book-author"></small></div>
     <div class="progress-head"><span id="progress-label">—</span><div><i id="progress-bar"></i></div></div>
-    <button id="annotation-toggle" class="reader-icon annotation-toggle" type="button" aria-label="開啟共同標注">✦ <span id="annotation-count">0</span></button>
     <button id="settings-toggle" class="reader-icon" type="button" aria-label="閱讀設定">Aa</button>
     <button id="reader-login" class="reader-login" type="button">登入</button>
   </header>
@@ -37,18 +37,11 @@
     <button id="next-page" class="page-turn next" type="button" aria-label="下一頁">›</button>
   </main>
 
-  <aside id="annotation-panel" class="reader-panel annotation-panel" hidden>
-    <div class="panel-head"><div><small>COMMUNITY NOTES</small><strong>共同標注</strong></div><button data-close-panel="annotation-panel" aria-label="關閉">×</button></div>
-    <p class="panel-hint">選取書中文字即可新增標注。私人標注只有你看得到，公開標注則可由所有讀者回覆與投票。</p>
-    <div class="annotation-filter"><button class="active" data-note-filter="all">全部</button><button data-note-filter="chapter">本章</button></div>
-    <div id="annotation-list" class="annotation-list"><p class="muted">尚未載入標注。</p></div>
-  </aside>
-
   <section id="settings-panel" class="settings-popover" hidden>
     <div><span>字級</span><button id="font-smaller" type="button">A−</button><button id="font-larger" type="button">A＋</button></div>
     <label>主題<select id="theme-select"><option value="publisher">原書排版</option><option value="paper">紙張舒適</option><option value="night">夜間閱讀</option></select></label>
     <label>跨頁<select id="spread-select"><option value="auto">自動</option><option value="none">單頁</option></select></label>
-    <label class="threshold-setting"><span>公開泡泡顯示閾值 <output id="annotation-threshold-output">50%</output></span><input id="annotation-threshold" type="range" min="0" max="100" step="10" value="50"><small>數值越高，只顯示排序越前面的公開標注；私人標注永遠顯示。</small></label>
+    <label class="threshold-setting"><span>公開泡泡顯示閾值 <output id="annotation-threshold-output">50%</output></span><input id="annotation-threshold" type="range" min="0" max="100" step="10" value="50"><small>數值越高，只顯示局部排名越前面的泡泡；私人標注永遠顯示。</small></label>
   </section>
 
   <footer class="reader-footer">

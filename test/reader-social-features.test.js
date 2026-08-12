@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { LibraryRepository } from "../server/repositories/LibraryRepository.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
@@ -35,25 +36,86 @@ test("annotation creation waits for an explicit selection action", () => {
   assert.match(script, /action\.hidden = false/);
   assert.doesNotMatch(script, /readerState\.rendition\.on\("selected"[\s\S]{0,500}annotation-dialog"\)\.showModal/);
   assert.match(script, /getElementById\("selection-action"\)\.addEventListener\("click"/);
+  assert.match(script, /function selectionCharacterOffsets/);
+  assert.match(script, /before\.toString\(\)\.length/);
+  assert.match(script, /anchorOffsetStart: offsets\.start/);
 });
 
-test("annotation bubbles use thresholded fusion ranking and cloud interactions", () => {
+test("annotation bubbles aggregate five-position local threads with ranked realtime replies", () => {
   const html = read("public/reader.html");
   const script = read("public/reader.js");
   const routes = read("server/routes/annotations.js");
+  const repository = read("server/repositories/LibraryRepository.js");
   const schema = read("server/db/library-schema.sql");
   assert.match(html, /id="annotation-threshold"/);
   assert.match(html, /id="annotation-thread-dialog"/);
+  assert.doesNotMatch(html, /id="annotation-panel"/);
   assert.match(script, /function visibleBubbleNotes/);
-  assert.match(script, /function fusedAnnotationOrder/);
+  assert.match(script, /const ANNOTATION_CLUSTER_SIZE = 5/);
+  assert.match(script, /function annotationClusterDescriptor/);
+  assert.match(script, /function annotationClusters/);
+  assert.match(script, /Math\.floor\(Number\(storedStart\) \/ ANNOTATION_CLUSTER_SIZE\)/);
+  assert.match(script, /function compareAnnotationRank/);
+  assert.match(script, /function compareReplies/);
+  assert.match(script, /function annotationReplyTree/);
   assert.match(script, /mystery-note-bubble/);
   assert.match(script, /annotationVisibilityThreshold/);
+  assert.match(script, /rect\.bottom \+ 4/);
+  assert.match(script, /cluster\.notes\.map\(annotationThreadCard\)\.join/);
+  assert.match(script, /cluster\.notes\.length/);
+  assert.match(script, /data-reply-sort="best"/);
+  assert.match(script, /subscribeBook\(bookId/);
+  assert.doesNotMatch(script, /annotations\.highlight/);
+  assert.doesNotMatch(script, /function renderHighlights/);
+  assert.doesNotMatch(script, /function fusedAnnotationOrder/);
+  assert.doesNotMatch(script, /Math\.floor\(anchor \/ 20\)/);
   assert.match(routes, /annotation-replies\/:replyId\/vote/);
   assert.match(routes, /reviews\/:reviewId\/favorite/);
+  assert.match(repository, /cluster_key: Math\.floor\(anchorOffsetStart \/ ANNOTATION_CLUSTER_SIZE\)/);
+  assert.match(schema, /anchor_offset_start integer/);
+  assert.match(schema, /anchor_offset_end integer/);
+  assert.match(schema, /cluster_key integer/);
+  assert.match(schema, /cluster_key = floor\(anchor_offset_start \/ 5\.0\)::integer/);
   assert.match(schema, /create table if not exists public\.book_annotation_reply_votes/);
   assert.match(schema, /create table if not exists public\.book_review_favorites/);
   assert.match(schema, /create policy book_annotation_votes_own_read/);
+  assert.match(schema, /returns table \(reply_id text, score bigint, up_count bigint, down_count bigint, viewer_vote text\)/);
+  assert.match(schema, /parent\.annotation_id = book_annotation_replies\.annotation_id/);
   assert.match(schema, /tg_table_name = 'book_annotation_votes'[\s\S]*?v_visibility = 'private'/);
+});
+
+test("annotation cluster keys are derived from trusted five-position offsets", async () => {
+  let inserted = null;
+  const db = {
+    from(table) {
+      assert.equal(table, "book_annotations");
+      return {
+        insert(payload) {
+          inserted = payload;
+          return { select: () => ({ single: async () => ({ data: payload, error: null }) }) };
+        },
+      };
+    },
+  };
+  const repository = new LibraryRepository(db, { byId: new Map([["book-1", { id: "book-1" }]]) }, {});
+  repository.hydrateAnnotations = async (rows) => rows;
+  await repository.createAnnotation("book-1", "user-1", {
+    chapterHref: "chapter.xhtml",
+    cfiRange: "epubcfi(/6/2!/4/2,/1:14,/1:18)",
+    quote: "example",
+    content: "local thread",
+    visibility: "public",
+    anchorOffsetStart: 14,
+    anchorOffsetEnd: 21,
+    clusterKey: 999,
+  });
+  assert.equal(inserted.anchor_offset_start, 14);
+  assert.equal(inserted.anchor_offset_end, 21);
+  assert.equal(inserted.cluster_key, 2);
+  await assert.rejects(() => repository.createAnnotation("book-1", "user-1", {
+    cfiRange: "epubcfi(/6/2!/4/2,/1:14,/1:18)",
+    content: "missing offsets",
+  }), /INVALID_ANNOTATION/);
 });
 
 test("progress flushes to cloud and aggregate rating is shown on book cards", () => {

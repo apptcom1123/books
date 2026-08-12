@@ -12,6 +12,7 @@
   <script src="/auth.js" defer></script>
   <script src="/api.js" defer></script>
   <script src="/realtime.js" defer></script>
+  <script src="/ux.js" defer></script>
   <script src="/account.js" defer></script>
 </head>
 <body class="account-page">
@@ -25,7 +26,11 @@
   </header>
 
   <main class="account-shell">
-    <section id="account-gate" class="account-gate">
+    <section id="account-loading" class="account-loading" role="status" aria-live="polite">
+      <div class="account-loading-card skeleton" aria-hidden="true"></div>
+      <p>正在確認登入狀態…</p>
+    </section>
+    <section id="account-gate" class="account-gate" hidden>
       <span class="gate-mark">謎</span>
       <p class="eyebrow">PRIVATE READING ROOM</p>
       <h1>登入後進入你的書房</h1>
@@ -36,7 +41,7 @@
     <div id="account-content" hidden>
       <section class="account-hero">
         <div class="profile-card">
-          <img id="account-avatar" alt="" referrerpolicy="no-referrer">
+          <img id="account-avatar" alt="" width="72" height="72" referrerpolicy="no-referrer">
           <div><p class="eyebrow">MY READING ROOM</p><h1 id="account-name">我的書房</h1><p id="account-email"></p></div>
         </div>
         <div id="account-stats" class="account-stats" aria-label="書房摘要"></div>

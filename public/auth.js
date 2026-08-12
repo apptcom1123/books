@@ -3,6 +3,7 @@ class LibraryAuth {
     this.client = null;
     this.session = null;
     this.user = null;
+    this.lastUserId = null;
     this.ready = this.initialize();
   }
 
@@ -43,8 +44,11 @@ class LibraryAuth {
   }
 
   async refreshProfile() {
+    const previousUserId = this.user?.id || this.lastUserId;
     if (!this.session) {
       this.user = null;
+      if (previousUserId) window.libraryApi?.clearPrivateCache?.();
+      this.lastUserId = null;
       this.emit();
       return;
     }
@@ -55,6 +59,9 @@ class LibraryAuth {
     } catch {
       this.user = null;
     }
+    const nextUserId = this.user?.id || null;
+    if (previousUserId && previousUserId !== nextUserId) window.libraryApi?.clearPrivateCache?.();
+    this.lastUserId = nextUserId;
     this.emit();
   }
 
@@ -87,6 +94,8 @@ class LibraryAuth {
     if (this.client) await this.client.auth.signOut();
     this.session = null;
     this.user = null;
+    this.lastUserId = null;
+    window.libraryApi?.clearPrivateCache?.();
     this.emit();
   }
 

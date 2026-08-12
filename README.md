@@ -46,7 +46,7 @@ npm run verify:supabase
 
 `/feedback.html` 是獨立的讀者回饋頁，搜尋範圍包含討論主旨、本文、作者及所有回覆；點選結果會開啟完整討論視窗。
 
-閱讀器不會在反白時立刻打開表單。完成選取後先按畫面下方的「增加標注」，再決定內容與公開範圍。公私標注都儲存在 Supabase；RLS 只允許作者讀取自己的私人標注。標注泡泡依讚賞、收藏、回覆與時間做融合排序，顯示閾值可在閱讀器或個人書房調整。點兩下泡泡可開啟該位置的獨立標注討論。
+閱讀器不會在反白時立刻打開表單。完成選取後先按畫面下方的「增加標注」，再決定內容與公開範圍。公私標注都儲存在 Supabase；RLS 只允許作者讀取自己的私人標注。和 `yz_json` 一樣，標注以章節內的文字起始位置計算，每 5 個位置聚合成一顆泡泡；公私標注分開聚合，舊版沒有文字位移的資料保持獨立以避免錯誤合併。公開泡泡依局部討論串的淨分、讚數與時間排名，顯示閾值可在閱讀器或個人書房調整。點兩下泡泡會開啟該五字詞區段內的所有獨立小討論串。
 
 ## 個人書房與通知
 
@@ -59,12 +59,15 @@ npm run verify:supabase
 本站不在 Vercel Function 內另開常駐 WebSocket Server，而是共用瀏覽器中的單一 Supabase Realtime 連線。資料庫只廣播很小的 Delta（資源類型、操作、目標 ID、書籍 ID、序列號、時間），收到後再由既有 REST API 讀取經 RLS 授權的完整內容。
 
 - `user:{userId}:notifications` 是登入者自己的私有通知 Topic。
-- `book:{bookId}:activity` 只傳公開評論／標注的 ID；首頁評論視窗與閱讀器收到事件後重新讀取經 RLS 授權的資料。
+- `book:{bookId}:activity` 只傳該書的評分、收藏、公開評論／標注變更 ID；評論視窗與閱讀器只在位於該書區域時加入 Topic。
+- `catalog:activity` 是首頁唯一的館藏聚合 Topic。評分、書籍收藏或評論異動時，前端以變更的 `bookId` 批次刷新現有書卡，不為每本書建立 Channel，也不重抓整份館藏。
+- `feedback:activity` 只在讀者回饋頁加入；回覆與投票依根討論串 ID 局部刷新。
 - 頁面進入背景 15 秒後移除 Channel；回到前景、恢復網路或重連成功時，以 `sequence_id` 從 `/api/realtime/events` 補拿遺漏事件。
 - SDK 每 30 秒執行心跳，斷線使用含 jitter 的 1、2、5、10、30 秒退避。Channel 未恢復時，每 45 秒使用 HTTP 補漏；畫面仍保留最後一次成功取得的資料。
-- 個人書房的通知頁顯示連線狀態與心跳延遲；開發者也可在瀏覽器 Console 執行 `libraryRealtime.diagnostics()` 查看最近 50 筆狀態日誌、重連、錯誤、事件延遲與訂閱 Topic。
+- 同一瀏覽器分頁的所有 Topic 共用一條 Supabase Socket；關閉評論視窗會立即 unsubscribe 該書 Room，沒有 listener 的 Channel 會被移除。事件先以 220–280 ms 合併，避免高頻按讚／投票造成重複 REST 請求。
+- 個人書房的通知頁顯示連線狀態與心跳延遲；開發者也可在瀏覽器 Console 執行 `libraryRealtime.diagnostics()` 查看 Socket `readyState`、最近 50 筆狀態日誌、重連、錯誤、重複事件、事件延遲與訂閱 Topic。
 
-WebSocket 由 HTTPS Supabase URL 自動使用 `wss://`。個人通知 Channel 是 private，JWT 在 join 與 token refresh 時由 SDK 更新，接收權限由 `realtime.messages` RLS 決定；公開書籍 Room 則不含私人標注或完整資料。連線數、訊息量、Lag、錯誤率與節點資源請在 Supabase Dashboard 的 Realtime Reports 監看，因為 Socket 並不終止於本站 Express/Vercel 節點。
+WebSocket 由 HTTPS Supabase URL 自動使用 `wss://`。個人通知 Channel 是 private，JWT 在 join 與 token refresh 時由 SDK 更新，接收權限由 `realtime.messages` RLS 決定；公開 Room 則不含私人標注、使用者 ID 或完整資料。HTTP 補漏端點另有每 IP 每分鐘 120 次限制。連線數、訊息量、Lag、錯誤率與節點記憶體請在 Supabase Dashboard 的 Realtime Reports 監看，因為 Socket 並不終止於本站 Express/Vercel 節點。
 
 目前沒有額外套用 `permessage-deflate`、MessagePack 或 Protocol Buffers：傳輸內容已是小型 Delta，而 Supabase 託管傳輸不提供本站逐連線調整壓縮的介面。若日後改為自架大量二進位串流，再評估二進位協定、每 IP 連線上限與 Redis Pub/Sub；目前水平分發、連線上限及惡意 Socket 防護由 Supabase Realtime 層負責。
 

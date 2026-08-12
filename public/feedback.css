@@ -15,7 +15,8 @@
 .feedback-search kbd { border:1px solid #d4c8b6; color:var(--muted); background:#eee5d8; padding:4px 7px; font:10px var(--sans); }
 .feedback-result-summary { margin:17px 0; color:var(--muted); font-size:12px; }
 .feedback-cards { display:grid; }
-.feedback-card { appearance:none; width:100%; display:grid; grid-template-columns:5px 1fr auto; gap:22px; align-items:stretch; text-align:left; border:0; border-bottom:1px solid var(--line); padding:24px 5px 24px 0; background:transparent; color:inherit; cursor:pointer; transition:background .2s,transform .2s; }
+.feedback-card { appearance:none; width:100%; display:grid; grid-template-columns:5px 1fr auto; gap:22px; align-items:stretch; text-align:left; border:0; border-bottom:1px solid var(--line); padding:24px 5px 24px 0; background:transparent; color:inherit; cursor:pointer; transition:background .2s,transform .2s; content-visibility:auto; contain-intrinsic-size:112px; }
+.feedback-card-skeleton { min-height:112px; margin:0; border-bottom:1px solid var(--line); border-radius:0; }
 .feedback-card:hover,.feedback-card:focus-visible { background:rgba(255,255,255,.42); transform:translateX(5px); outline:0; }
 .feedback-card-line { background:var(--green); clip-path:polygon(0 0,100% 7%,70% 100%,15% 92%); }
 .feedback-card-main { min-width:0; display:grid; gap:8px; }

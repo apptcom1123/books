@@ -5,6 +5,7 @@ const state = {
   filters: { q: "", category: "", source: "", sort: "popular", favoritesOnly: false },
   loading: false,
   requestId: 0,
+  catalogAbort: null,
   pagination: { total: 0, hasMore: false },
   reviewBook: null,
   reviews: [],
@@ -15,7 +16,13 @@ const state = {
   reviewRealtimeStop: null,
   reviewRealtimeBookId: null,
   reviewRefreshTimer: null,
+  catalogRealtimeStop: null,
+  catalogRefreshTimer: null,
+  catalogRefreshIds: new Set(),
   ratingPending: new Set(),
+  favoritePending: new Set(),
+  reviewMutationPending: new Set(),
+  reviewPrefetched: new Set(),
 };
 
 const elements = {
@@ -56,12 +63,21 @@ function requireLogin() {
 }
 
 function renderSkeletons() {
-  elements.grid.innerHTML = Array.from({ length: 10 }, () => '<div class="skeleton" aria-hidden="true"></div>').join("");
+  elements.grid.hidden = false;
+  elements.empty.hidden = true;
+  elements.grid.innerHTML = Array.from({ length: 10 }, () => `
+    <article class="book-card book-card-skeleton" aria-hidden="true">
+      <div class="skeleton skeleton-cover"></div>
+      <div class="skeleton skeleton-line"></div>
+      <div class="skeleton skeleton-line short"></div>
+      <div class="skeleton skeleton-line"></div>
+    </article>`).join("");
 }
 
 function bookCard(book) {
   const sourceCode = book.source === "Standard Ebooks" ? "SE" : "PG";
   const ratingPending = state.ratingPending.has(book.id);
+  const favoritePending = state.favoritePending.has(book.id);
   const stars = Array.from({ length: 5 }, (_, index) => {
     const value = index + 1;
     const active = value <= (book.viewer.rating || 0) ? " active" : "";
@@ -74,9 +90,9 @@ function bookCard(book) {
     <article class="book-card" data-book-id="${book.id}">
       <a class="cover-link" href="/reader.html?id=${encodeURIComponent(book.id)}" aria-label="閱讀《${escapeHtml(book.title_zh)}》">
         <span class="source-badge">${sourceCode}</span>
-        <img class="book-cover" src="${encodeURI(book.cover_url)}" alt="《${escapeHtml(book.title_zh)}》封面" loading="lazy" decoding="async">
+        <img class="book-cover" src="${encodeURI(book.cover_url)}" alt="《${escapeHtml(book.title_zh)}》封面" width="320" height="480" loading="lazy" decoding="async">
       </a>
-      <button class="favorite-button${book.viewer.isFavorite ? " active" : ""}" type="button" data-action="favorite" data-book-id="${book.id}" aria-label="${book.viewer.isFavorite ? "取消收藏" : "收藏"}">${book.viewer.isFavorite ? "♥" : "♡"}</button>
+      <button class="favorite-button${book.viewer.isFavorite ? " active" : ""}" type="button" data-action="favorite" data-book-id="${book.id}" aria-label="${book.viewer.isFavorite ? "取消收藏" : "收藏"}"${favoritePending ? ' disabled aria-busy="true"' : ""}>${book.viewer.isFavorite ? "♥" : "♡"}</button>
       <div class="book-meta">
         <h3><a href="/reader.html?id=${encodeURIComponent(book.id)}">${escapeHtml(book.title_zh)}</a></h3>
         <p class="book-original-title" title="${escapeHtml(book.title_original)}">${escapeHtml(book.title_original)}</p>
@@ -109,6 +125,56 @@ function renderBooks() {
     : state.filters.q ? `搜尋：「${state.filters.q}」` : "";
 }
 
+function sortLoadedBooks() {
+  if (state.filters.sort === "rating") {
+    state.books.sort((a, b) => Number(b.metrics.averageRating || 0) - Number(a.metrics.averageRating || 0)
+      || Number(b.metrics.ratingCount || 0) - Number(a.metrics.ratingCount || 0));
+  } else if (state.filters.sort === "popular") {
+    state.books.sort((a, b) => Number(b.metrics.readerCount || 0) - Number(a.metrics.readerCount || 0)
+      || Number(b.metrics.favoriteCount || 0) - Number(a.metrics.favoriteCount || 0)
+      || Number(a.catalog_order || 0) - Number(b.catalog_order || 0));
+  }
+}
+
+async function refreshCatalogBooks(ids) {
+  const visibleIds = [...new Set(ids)].filter((id) => state.books.some((book) => book.id === id) && !state.ratingPending.has(id) && !state.favoritePending.has(id));
+  if (!visibleIds.length) return;
+  try {
+    const result = await window.libraryApi.get(`/books/sync?ids=${encodeURIComponent(visibleIds.join(","))}`);
+    for (const fresh of result.books || []) {
+      const current = state.books.find((book) => book.id === fresh.id);
+      if (current) Object.assign(current, fresh);
+      if (state.reviewBook?.id === fresh.id) state.reviewBook = fresh;
+    }
+    sortLoadedBooks();
+    renderBooks();
+    if (state.reviewBook && elements.reviewDialog.open) renderReviews();
+  } catch (error) {
+    if (navigator.onLine) console.warn("Catalog delta refresh failed", error);
+  }
+}
+
+function syncCatalogRealtime() {
+  if (state.catalogRealtimeStop || !window.libraryRealtime) return;
+  state.catalogRealtimeStop = window.libraryRealtime.subscribeCatalog(({ events, reason }) => {
+    if (reason === "overflow") state.books.forEach((book) => state.catalogRefreshIds.add(book.id));
+    if (!events.length) {
+      if (reason === "catchup-truncated") state.books.forEach((book) => state.catalogRefreshIds.add(book.id));
+      else return;
+    }
+    for (const event of events) {
+      if (["book_rating", "book_favorite", "review"].includes(event.resource) && event.bookId
+        && !(elements.reviewDialog.open && state.reviewBook?.id === event.bookId)) state.catalogRefreshIds.add(event.bookId);
+    }
+    clearTimeout(state.catalogRefreshTimer);
+    state.catalogRefreshTimer = setTimeout(() => {
+      const ids = [...state.catalogRefreshIds];
+      state.catalogRefreshIds.clear();
+      refreshCatalogBooks(ids);
+    }, 280);
+  });
+}
+
 function renderCategories(categories) {
   const all = ["", ...categories];
   elements.categories.innerHTML = all.map((category) => `<button class="category-chip${state.filters.category === category ? " active" : ""}" type="button" data-category="${escapeHtml(category)}">${category || "全部"}</button>`).join("");
@@ -132,7 +198,7 @@ async function loadStaticCatalog({ limit, offset }) {
   return { books: books.slice(offset, offset + limit), pagination: { total, limit, offset, hasMore: offset + limit < total }, filters: { categories: ["Literature", "Science & Technology", "History", "Social Sciences & Society", "Arts & Culture", "Religion & Philosophy", "Lifestyle & Hobbies", "Health & Medicine"] } };
 }
 
-async function loadBooks({ append = false } = {}) {
+async function loadBooksLegacy({ append = false } = {}) {
   if (append && (state.loading || !state.pagination.hasMore)) return;
   const requestId = ++state.requestId;
   const offset = append ? state.books.length : 0;
@@ -184,6 +250,88 @@ async function loadBooks({ append = false } = {}) {
   }
 }
 
+function applyCatalogResult(result, append) {
+  state.books = append
+    ? [...state.books, ...result.books.filter((book) => !state.books.some((current) => current.id === book.id))]
+    : result.books;
+  state.pagination = {
+    total: result.pagination.total,
+    hasMore: result.pagination.hasMore ?? state.books.length < result.pagination.total,
+  };
+  document.getElementById("catalog-total").textContent = result.pagination.total;
+  renderCategories(result.filters.categories);
+  renderBooks();
+}
+
+async function loadBooks({ append = false } = {}) {
+  if (append && (state.loading || !state.pagination.hasMore)) return;
+  if (!append) state.catalogAbort?.abort();
+  const controller = new AbortController();
+  state.catalogAbort = controller;
+  const requestId = ++state.requestId;
+  const offset = append ? state.books.length : 0;
+  state.loading = true;
+  window.libraryUX?.setBusy(elements.grid, true, append ? "正在載入更多館藏" : "正在更新館藏");
+
+  if (append) renderBooks();
+  else if (!state.books.length) {
+    elements.loadMoreWrap.hidden = true;
+    renderSkeletons();
+  } else {
+    elements.summary.textContent = "正在更新館藏；目前先保留上次載入的內容。";
+  }
+
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), sort: state.filters.sort });
+  if (state.filters.q) params.set("q", state.filters.q);
+  if (state.filters.category) params.set("category", state.filters.category);
+  if (state.filters.source) params.set("source", state.filters.source);
+
+  try {
+    let result;
+    try {
+      result = await window.libraryApi.cachedGet(`/books?${params}`, {
+        key: `catalog:${params}`,
+        private: true,
+        staleTime: 30_000,
+        maxAge: 5 * 60_000,
+        signal: controller.signal,
+        onUpdate: (fresh) => {
+          if (requestId === state.requestId && !append) applyCatalogResult(fresh, false);
+        },
+        onError: (error) => {
+          if (error.code !== "REQUEST_CANCELLED" && navigator.onLine) console.warn("Catalog background refresh failed", error);
+        },
+      });
+    } catch (apiError) {
+      if (apiError.code === "REQUEST_CANCELLED") return;
+      result = await loadStaticCatalog({ limit: PAGE_SIZE, offset });
+      console.warn("API unavailable; showing the read-only static catalog.", apiError);
+      if (!state.apiWarningShown) {
+        state.apiWarningShown = true;
+        toast("互動資料庫暫時不可用；已保留可閱讀的靜態館藏。", "error");
+      }
+    }
+    if (requestId !== state.requestId) return;
+    applyCatalogResult(result, append);
+  } catch (error) {
+    if (requestId !== state.requestId || error.code === "REQUEST_CANCELLED") return;
+    if (!state.books.length) {
+      elements.grid.innerHTML = "";
+      elements.empty.hidden = false;
+    } else {
+      elements.summary.textContent = "更新失敗；目前顯示上次成功載入的館藏。";
+    }
+    toast(error.message, "error");
+  } finally {
+    if (requestId === state.requestId) {
+      state.loading = false;
+      state.catalogAbort = null;
+      window.libraryUX?.setBusy(elements.grid, false);
+      if (state.books.length) renderBooks();
+    }
+  }
+}
+
 async function rateBook(bookId, rating) {
   if (!requireLogin()) return;
   const book = state.books.find((item) => item.id === bookId);
@@ -209,8 +357,10 @@ async function rateBook(bookId, rating) {
   } catch (error) {
     book.viewer.rating = previousRating;
     Object.assign(book.metrics, previousMetrics);
+    window.libraryUX?.recordRollback("book-rating", error.code);
     toast(`評分未儲存：${error.message}`, "error");
   } finally {
+    window.libraryApi.invalidate((key) => key.includes("catalog:") || key.includes(`/books/${bookId}`));
     state.ratingPending.delete(bookId);
     renderBooks();
   }
@@ -219,13 +369,31 @@ async function rateBook(bookId, rating) {
 async function toggleFavorite(bookId) {
   if (!requireLogin()) return;
   const book = state.books.find((item) => item.id === bookId);
+  if (!book || state.favoritePending.has(bookId)) return;
+  const previousViewer = { ...book.viewer };
+  const previousMetrics = { ...book.metrics };
+  const nextFavorite = !book.viewer.isFavorite;
+  state.favoritePending.add(bookId);
+  book.viewer.isFavorite = nextFavorite;
+  book.metrics.favoriteCount = Math.max(0, Number(book.metrics.favoriteCount || 0) + (nextFavorite ? 1 : -1));
+  renderBooks();
   try {
     const result = await window.libraryApi.post(`/books/${encodeURIComponent(bookId)}/favorite`);
     Object.assign(book.metrics, result.metrics);
     Object.assign(book.viewer, result.viewer);
     renderBooks();
     toast(result.viewer.isFavorite ? `已收藏《${book.title_zh}》` : "已取消收藏");
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    Object.assign(book.viewer, previousViewer);
+    Object.assign(book.metrics, previousMetrics);
+    window.libraryUX?.recordRollback("book-favorite", error.code);
+    toast(error.message, "error");
+  }
+  finally {
+    window.libraryApi.invalidate((key) => key.includes("catalog:") || key.includes(`/books/${bookId}`));
+    state.favoritePending.delete(bookId);
+    renderBooks();
+  }
 }
 
 function avatarFor(user) {
@@ -254,9 +422,9 @@ function renderReviews() {
   document.getElementById("review-submit").textContent = own ? "更新評論" : "發表評論";
   renderReviewRating();
   elements.reviewList.innerHTML = state.reviews.length ? state.reviews.map((review) => `<article class="review-card">
-    <div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt=""><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
+    <div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt="" width="30" height="30" loading="lazy" decoding="async"><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
     <p>${escapeHtml(review.content)}</p>
-    <div class="review-actions"><button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}">${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}">${review.viewerFavorite ? "★ 已收藏" : "☆ 收藏評論"} ${review.favoriteCount || 0}</button></div>
+    <div class="review-actions"><button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}"${state.reviewMutationPending.has(`like:${review.id}`) ? " disabled" : ""}>${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}"${state.reviewMutationPending.has(`favorite:${review.id}`) ? " disabled" : ""}>${review.viewerFavorite ? "★ 已收藏" : "☆ 收藏評論"} ${review.favoriteCount || 0}</button></div>
   </article>`).join("") : '<p class="muted">還沒有文字評論，分享第一則無劇透心得吧。</p>';
 }
 
@@ -268,15 +436,26 @@ async function openReviews(bookId) {
     elements.reviewList.innerHTML = '<p class="muted">正在取回評論…</p>';
     if (!elements.reviewDialog.open) elements.reviewDialog.showModal();
     syncReviewRealtime(bookId);
-    await refreshReviews(bookId);
+    await refreshReviews(bookId, { preferCache: true });
   } catch (error) { toast(error.message, "error"); }
 }
 
-async function refreshReviews(bookId) {
+async function refreshReviews(bookId, { preferCache = false } = {}) {
   if (!state.reviewBook || state.reviewBook.id !== bookId || !elements.reviewDialog.open) return;
+  const read = (endpoint, key, onUpdate) => preferCache
+    ? window.libraryApi.cachedGet(endpoint, { key, private: true, staleTime: 20_000, maxAge: 3 * 60_000, onUpdate, onError: () => {} })
+    : window.libraryApi.get(endpoint);
   const [bookResult, reviewResult] = await Promise.all([
-    window.libraryApi.get(`/books/${encodeURIComponent(bookId)}`),
-    window.libraryApi.get(`/books/${encodeURIComponent(bookId)}/reviews`),
+    read(`/books/${encodeURIComponent(bookId)}`, `book:${bookId}`, (fresh) => {
+      if (state.reviewBook?.id !== bookId || !elements.reviewDialog.open) return;
+      state.reviewBook = fresh.book;
+      renderReviews();
+    }),
+    read(`/books/${encodeURIComponent(bookId)}/reviews`, `book-reviews:${bookId}`, (fresh) => {
+      if (state.reviewBook?.id !== bookId || !elements.reviewDialog.open) return;
+      state.reviews = fresh.reviews;
+      renderReviews();
+    }),
   ]);
   if (!state.reviewBook || state.reviewBook.id !== bookId || !elements.reviewDialog.open) return;
   state.reviewBook = bookResult.book;
@@ -290,6 +469,15 @@ async function refreshReviews(bookId) {
   renderReviews();
 }
 
+function prefetchReviews(bookId) {
+  if (!bookId || state.reviewPrefetched.has(bookId)) return;
+  state.reviewPrefetched.add(bookId);
+  void Promise.all([
+    window.libraryApi.prefetch(`/books/${encodeURIComponent(bookId)}`, { key: `book:${bookId}`, private: true, staleTime: 20_000 }),
+    window.libraryApi.prefetch(`/books/${encodeURIComponent(bookId)}/reviews`, { key: `book-reviews:${bookId}`, private: true, staleTime: 20_000 }),
+  ]);
+}
+
 function syncReviewRealtime(bookId = null) {
   if (state.reviewRealtimeBookId === bookId && state.reviewRealtimeStop) return;
   state.reviewRealtimeStop?.();
@@ -298,7 +486,7 @@ function syncReviewRealtime(bookId = null) {
   if (!bookId || !window.libraryRealtime) return;
   state.reviewRealtimeBookId = bookId;
   state.reviewRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
-    if (events.length && !events.some((event) => ["review", "review_like", "review_favorite"].includes(event.resource))) return;
+    if (events.length && !events.some((event) => ["book_rating", "review", "review_like", "review_favorite"].includes(event.resource))) return;
     clearTimeout(state.reviewRefreshTimer);
     state.reviewRefreshTimer = setTimeout(() => refreshReviews(bookId).catch(() => {}), 320);
   });
@@ -330,22 +518,58 @@ async function submitReview(event) {
 
 async function toggleReviewLike(reviewId) {
   if (!requireLogin()) return;
+  const pendingKey = `like:${reviewId}`;
+  if (state.reviewMutationPending.has(pendingKey)) return;
+  const review = state.reviews.find((item) => item.id === reviewId);
+  if (!review) return;
+  const previous = { ...review };
+  state.reviewMutationPending.add(pendingKey);
+  review.viewerLiked = !review.viewerLiked;
+  review.likeCount = Math.max(0, Number(review.likeCount || 0) + (review.viewerLiked ? 1 : -1));
+  renderReviews();
   try {
     const result = await window.libraryApi.post(`/reviews/${encodeURIComponent(reviewId)}/like`);
     const index = state.reviews.findIndex((review) => review.id === reviewId);
     if (index >= 0) state.reviews[index] = result.review;
     renderReviews();
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    Object.assign(review, previous);
+    window.libraryUX?.recordRollback("review-like", error.code);
+    toast(error.message, "error");
+  }
+  finally {
+    window.libraryApi.invalidate((key) => key.includes(`/books/${state.reviewBook?.id}/reviews`));
+    state.reviewMutationPending.delete(pendingKey);
+    renderReviews();
+  }
 }
 
 async function toggleReviewFavorite(reviewId) {
   if (!requireLogin()) return;
+  const pendingKey = `favorite:${reviewId}`;
+  if (state.reviewMutationPending.has(pendingKey)) return;
+  const review = state.reviews.find((item) => item.id === reviewId);
+  if (!review) return;
+  const previous = { ...review };
+  state.reviewMutationPending.add(pendingKey);
+  review.viewerFavorite = !review.viewerFavorite;
+  review.favoriteCount = Math.max(0, Number(review.favoriteCount || 0) + (review.viewerFavorite ? 1 : -1));
+  renderReviews();
   try {
     const result = await window.libraryApi.post(`/reviews/${encodeURIComponent(reviewId)}/favorite`);
     const index = state.reviews.findIndex((review) => review.id === reviewId);
     if (index >= 0) state.reviews[index] = result.review;
     renderReviews();
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    Object.assign(review, previous);
+    window.libraryUX?.recordRollback("review-favorite", error.code);
+    toast(error.message, "error");
+  }
+  finally {
+    window.libraryApi.invalidate((key) => key.includes(`/books/${state.reviewBook?.id}/reviews`));
+    state.reviewMutationPending.delete(pendingKey);
+    renderReviews();
+  }
 }
 
 function renderAuth(user) {
@@ -397,6 +621,12 @@ function wireEvents() {
     if (target.dataset.action === "favorite") toggleFavorite(target.dataset.bookId);
     if (target.dataset.action === "reviews") openReviews(target.dataset.bookId);
   });
+  const prefetchFromIntent = (event) => {
+    const target = event.target.closest('[data-action="reviews"]');
+    if (target) prefetchReviews(target.dataset.bookId);
+  };
+  elements.grid.addEventListener("pointerover", prefetchFromIntent, { passive: true });
+  elements.grid.addEventListener("focusin", prefetchFromIntent);
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
   elements.reviewForm.addEventListener("submit", submitReview);
   document.getElementById("review-rating").addEventListener("click", (event) => { const button = event.target.closest("[data-review-rating]"); if (!button) return; state.reviewRating = Number(button.dataset.reviewRating); renderReviewRating(); });
@@ -420,6 +650,7 @@ async function initialize() {
   renderAuth(window.libraryAuth.user);
   syncNotificationRealtime(window.libraryAuth.user);
   await loadBooks();
+  syncCatalogRealtime();
   const requestedReview = new URLSearchParams(location.search).get("review");
   if (requestedReview) openReviews(requestedReview);
 }

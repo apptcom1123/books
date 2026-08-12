@@ -45,6 +45,20 @@ router.get("/", async (req, res, next) => {
   }
 });
 
+router.get("/sync", async (req, res, next) => {
+  try {
+    const ids = [...new Set(String(req.query.ids || "").split(",").map((id) => id.trim()).filter(Boolean))];
+    if (!ids.length || ids.length > 50 || ids.some((id) => !/^[A-Za-z0-9_-]{1,180}$/.test(id))) {
+      return res.status(400).json({ error: "INVALID_BOOK_SYNC_IDS", message: "同步的館藏範圍不正確。" });
+    }
+    const books = ids.map((id) => req.app.locals.catalog.byId.get(id)).filter(Boolean);
+    const decorated = await req.repositories.library.decorate(books, req.user?.userId);
+    res.json({ books: decorated });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/:bookId", async (req, res, next) => {
   try {
     const book = await req.repositories.library.getBook(req.params.bookId, req.user?.userId);

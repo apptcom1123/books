@@ -17,6 +17,8 @@ class LibraryRealtime {
       errors: 0,
       events: 0,
       duplicates: 0,
+      coalesced: 0,
+      overflows: 0,
       catchups: 0,
       transport: "websocket",
     };
@@ -34,6 +36,14 @@ class LibraryRealtime {
   subscribeBook(bookId, listener) {
     if (!this.validPart(bookId)) throw new Error("INVALID_REALTIME_BOOK_ID");
     return this.subscribe(`book:${bookId}:activity`, listener, false);
+  }
+
+  subscribeCatalog(listener) {
+    return this.subscribe("catalog:activity", listener, false);
+  }
+
+  subscribeFeedback(listener) {
+    return this.subscribe("feedback:activity", listener, false);
   }
 
   subscribeNotifications(listener) {
@@ -55,6 +65,7 @@ class LibraryRealtime {
         everSubscribed: false,
         generation: 0,
         pending: [],
+        pendingOverflow: false,
         flushTimer: null,
         catchingUp: false,
         lastSequence: this.readSequence(topic),
@@ -160,7 +171,10 @@ class LibraryRealtime {
     this.metrics.heartbeatStatus = detail.status || "unknown";
     this.metrics.lastHeartbeatAt = detail.at || Date.now();
     if (Number.isFinite(detail.latency)) this.metrics.heartbeatLatencyMs = detail.latency;
-    if (["timeout", "error", "disconnected"].includes(detail.status)) this.metrics.errors += 1;
+    if (["timeout", "error", "disconnected"].includes(detail.status)) {
+      this.metrics.errors += 1;
+      this.log("heartbeat", detail.status, { latency: detail.latency ?? null });
+    }
     this.updateStatus();
   }
 
@@ -196,13 +210,24 @@ class LibraryRealtime {
       const latency = Date.now() - Date.parse(event.emittedAt);
       if (Number.isFinite(latency) && latency >= 0) this.metrics.lastEventLatencyMs = latency;
     }
-    record.pending.push(event);
-    if (record.pending.length > 50) record.pending.splice(0, record.pending.length - 50);
+    const pendingIndex = record.pending.findIndex((pending) => pending.resource === event.resource
+      && pending.targetId === event.targetId && pending.bookId === event.bookId);
+    if (pendingIndex >= 0) {
+      record.pending[pendingIndex] = event;
+      this.metrics.coalesced += 1;
+    } else record.pending.push(event);
+    if (record.pending.length > 200) {
+      record.pending.shift();
+      record.pendingOverflow = true;
+      this.metrics.overflows += 1;
+    }
     clearTimeout(record.flushTimer);
     record.flushTimer = setTimeout(() => {
       const events = record.pending.splice(0);
+      const flushReason = record.pendingOverflow ? "overflow" : source;
+      record.pendingOverflow = false;
       for (const listener of record.listeners) {
-        try { listener({ topic: record.topic, events, reason: source }); } catch (error) { console.warn("Realtime listener failed", error); }
+        try { listener({ topic: record.topic, events, reason: flushReason }); } catch (error) { console.warn("Realtime listener failed", error); }
       }
     }, 220);
     this.updateStatus();
@@ -257,12 +282,19 @@ class LibraryRealtime {
     try { sessionStorage.setItem(`mystery-library:realtime-sequence:${topic}`, String(sequence)); } catch {}
   }
 
+  socketState() {
+    const realtime = window.libraryAuth?.client?.realtime;
+    if (!realtime) return "unavailable";
+    try { return realtime.isConnected() ? "open" : "closed"; } catch { return "unknown"; }
+  }
+
   updateStatus() {
     const records = [...this.topics.values()];
+    this.metrics.socketState = this.socketState();
     if (!navigator.onLine) this.metrics.state = "offline";
     else if (this.hiddenPaused) this.metrics.state = "paused";
     else if (!records.length) this.metrics.state = "idle";
-    else if (records.every((record) => record.channelStatus === "SUBSCRIBED")) this.metrics.state = "healthy";
+    else if (this.metrics.socketState === "open" && records.every((record) => record.channelStatus === "SUBSCRIBED")) this.metrics.state = "healthy";
     else if (records.some((record) => ["CHANNEL_ERROR", "TIMED_OUT"].includes(record.channelStatus))) this.metrics.state = "fallback";
     else this.metrics.state = "connecting";
     this.metrics.activeChannels = records.filter((record) => record.channelStatus === "SUBSCRIBED").length;
@@ -274,7 +306,7 @@ class LibraryRealtime {
   scheduleFallbackPoll() {
     clearTimeout(this.pollTimer);
     const shouldPoll = navigator.onLine && !document.hidden && this.topics.size > 0
-      && ![...this.topics.values()].every((record) => record.channelStatus === "SUBSCRIBED");
+      && !(this.socketState() === "open" && [...this.topics.values()].every((record) => record.channelStatus === "SUBSCRIBED"));
     if (!shouldPoll) return;
     this.pollTimer = setTimeout(() => {
       this.metrics.transport = "http-poll";

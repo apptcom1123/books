@@ -1,6 +1,8 @@
 const params = new URLSearchParams(location.search);
 const bookId = params.get("id");
 const requestedNoteId = params.get("note");
+const ANNOTATION_CLUSTER_SIZE = 5;
+const PUBLIC_ANNOTATION_RANK_WINDOW = 20;
 const readerState = {
   bookRecord: null,
   epub: null,
@@ -10,9 +12,7 @@ const readerState = {
   currentHref: "",
   currentCfi: "",
   annotations: [],
-  renderedCfis: new Set(),
   selected: null,
-  noteFilter: "all",
   fontSize: 100,
   saveTimer: null,
   turning: false,
@@ -24,6 +24,9 @@ const readerState = {
   progressSavedOnce: false,
   progressSaveQueue: Promise.resolve(),
   activeThreadNoteId: null,
+  replySort: "best",
+  replyParentId: null,
+  annotationMutationPending: new Set(),
   bubbleTap: { id: null, at: 0 },
 };
 
@@ -89,7 +92,6 @@ async function loadBookRecord() {
   document.title = `${record.title_zh}・謎讀`;
   document.getElementById("book-title").textContent = record.title_zh;
   document.getElementById("book-author").textContent = record.author;
-  document.getElementById("annotation-count").textContent = record.metrics.annotationCount;
   window.libraryApi.post(`/books/${encodeURIComponent(bookId)}/read`, { deviceId: deviceId() }).catch(() => {});
   return record;
 }
@@ -244,14 +246,44 @@ function wireRenditionEvents() {
     setTimeout(() => renderAnnotationBubbles(), 40);
   });
   readerState.rendition.on("selected", (cfiRange, contents) => {
-    const quote = contents.window.getSelection()?.toString().replace(/\s+/g, " ").trim().slice(0, 600) || "";
+    const selection = contents.window.getSelection();
+    const quote = selection?.toString().replace(/\s+/g, " ").trim().slice(0, 600) || "";
     if (!quote) return;
-    readerState.selected = { cfiRange, quote, chapterHref: readerState.currentHref };
+    const offsets = selectionCharacterOffsets(contents, selection);
+    if (!offsets) {
+      toast("無法判斷這段文字的位置，請重新選取。", "error");
+      return;
+    }
+    readerState.selected = {
+      cfiRange,
+      quote,
+      chapterHref: readerState.currentHref,
+      anchorOffsetStart: offsets.start,
+      anchorOffsetEnd: offsets.end,
+    };
     document.getElementById("selected-quote").textContent = quote;
     document.getElementById("annotation-content").value = "";
     const action = document.getElementById("selection-action");
     action.hidden = false;
   });
+}
+
+function selectionCharacterOffsets(contents, selection) {
+  if (!selection?.rangeCount || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const root = contents?.document?.body;
+  if (!root?.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
+  try {
+    // Same offset model as yz_json: count text before the selection and put
+    // every five starting positions into one local discussion cluster.
+    const before = contents.document.createRange();
+    before.selectNodeContents(root);
+    before.setEnd(range.startContainer, range.startOffset);
+    const start = before.toString().length;
+    return { start, end: start + selection.toString().length };
+  } catch {
+    return null;
+  }
 }
 
 function chapterLabel(href) {
@@ -281,7 +313,6 @@ function updateProgress(location) {
     if (!readerState.progressSavedOnce) persistProgress();
     else readerState.saveTimer = setTimeout(() => persistProgress(), 350);
   }
-  if (readerState.noteFilter === "chapter") renderAnnotations();
 }
 
 async function persistProgress({ keepalive = false } = {}) {
@@ -310,51 +341,103 @@ async function persistProgress({ keepalive = false } = {}) {
   }
 }
 
-function annotationClusterKey(note) {
-  const cfiStart = String(note.cfi_range || "").split(",")[0].replace(/\)$/, "");
-  return `${String(note.chapter_href || "").split("#")[0]}::${cfiStart}`;
+function normalizedChapterHref(note) {
+  return String(note.chapter_href || "").split("#")[0];
 }
 
-function annotationRegionKey(note) {
-  const numbers = String(note.cfi_range || "").match(/\d+/g)?.map(Number) || [0];
-  const anchor = numbers.at(-2) || numbers.at(-1) || 0;
-  return `${String(note.chapter_href || "").split("#")[0]}::${Math.floor(anchor / 20)}`;
+function annotationClusterDescriptor(note) {
+  const chapter = normalizedChapterHref(note);
+  const storedCluster = note.cluster_key;
+  const storedStart = note.anchor_offset_start;
+  const hasCluster = storedCluster !== null && storedCluster !== undefined && storedCluster !== ""
+    && Number.isInteger(Number(storedCluster)) && Number(storedCluster) >= 0;
+  const hasStart = storedStart !== null && storedStart !== undefined && storedStart !== ""
+    && Number.isInteger(Number(storedStart)) && Number(storedStart) >= 0;
+  const clusterIndex = hasCluster
+    ? Number(storedCluster)
+    : hasStart ? Math.floor(Number(storedStart) / ANNOTATION_CLUSTER_SIZE) : null;
+  const visibility = note.visibility === "private" ? "private" : "public";
+  return {
+    chapter,
+    clusterIndex,
+    start: hasStart ? Number(storedStart) : Number.MAX_SAFE_INTEGER,
+    visibility,
+    // Rows created before offsets existed remain separate. Opaque CFI path
+    // numbers are not text positions and must not be used to merge threads.
+    key: clusterIndex === null
+      ? `${visibility}:${chapter}:legacy:${note.id}`
+      : `${visibility}:${chapter}:${clusterIndex}`,
+  };
 }
 
-function annotationSignal(note) {
-  const ageDays = Math.max(0, (Date.now() - new Date(note.created_at).getTime()) / 86400000);
-  const recency = Math.max(0, 2 - Math.log10(ageDays + 1));
-  return Number(note.score || 0) * 4 + Math.log2(Number(note.favoriteCount || 0) + 1) * 2 + Math.log2((note.replies?.length || 0) + 1) * 1.5 + recency;
+function compareAnnotationRank(a, b) {
+  return Number(b.score || 0) - Number(a.score || 0)
+    || Number(b.upCount || 0) - Number(a.upCount || 0)
+    || new Date(b.created_at) - new Date(a.created_at);
+}
+
+function annotationClusters(notes = readerState.annotations) {
+  const clusters = new Map();
+  for (const note of notes) {
+    const descriptor = annotationClusterDescriptor(note);
+    if (!clusters.has(descriptor.key)) clusters.set(descriptor.key, { ...descriptor, notes: [] });
+    clusters.get(descriptor.key).notes.push(note);
+  }
+  return [...clusters.values()].map((cluster) => {
+    const notesByPosition = [...cluster.notes].sort((a, b) => {
+      const hasStartA = a.anchor_offset_start !== null && a.anchor_offset_start !== undefined && a.anchor_offset_start !== ""
+        && Number.isInteger(Number(a.anchor_offset_start));
+      const hasStartB = b.anchor_offset_start !== null && b.anchor_offset_start !== undefined && b.anchor_offset_start !== ""
+        && Number.isInteger(Number(b.anchor_offset_start));
+      const startA = hasStartA ? Number(a.anchor_offset_start) : Number.MAX_SAFE_INTEGER;
+      const startB = hasStartB ? Number(b.anchor_offset_start) : Number.MAX_SAFE_INTEGER;
+      return startA - startB || compareAnnotationRank(a, b);
+    });
+    return {
+      ...cluster,
+      notes: [...cluster.notes].sort(compareAnnotationRank),
+      representative: notesByPosition[0],
+      score: Math.max(...cluster.notes.map((note) => Number(note.score) || 0)),
+      upCount: Math.max(...cluster.notes.map((note) => Number(note.upCount) || 0)),
+      newest: Math.max(...cluster.notes.map((note) => new Date(note.created_at).getTime() || 0)),
+    };
+  });
+}
+
+function compareAnnotationClusters(a, b) {
+  return a.chapter.localeCompare(b.chapter)
+    || a.start - b.start
+    || a.visibility.localeCompare(b.visibility)
+    || a.key.localeCompare(b.key);
 }
 
 function visibleBubbleNotes() {
-  const privateNotes = readerState.annotations.filter((note) => note.visibility === "private");
-  const publicNotes = readerState.annotations.filter((note) => note.visibility === "public");
+  const clusters = annotationClusters();
+  const privateClusters = clusters.filter((cluster) => cluster.visibility === "private");
+  const publicClusters = clusters.filter((cluster) => cluster.visibility === "public");
+  if (readerState.annotationThreshold <= 0) return [...privateClusters, ...publicClusters].sort(compareAnnotationClusters);
+
   const regions = new Map();
-  for (const note of publicNotes) {
-    const key = annotationRegionKey(note);
+  for (const cluster of publicClusters) {
+    const regionIndex = cluster.clusterIndex === null
+      ? `legacy:${cluster.key}`
+      : Math.floor(cluster.clusterIndex / PUBLIC_ANNOTATION_RANK_WINDOW);
+    const key = `${cluster.chapter}::${regionIndex}`;
     if (!regions.has(key)) regions.set(key, []);
-    regions.get(key).push(note);
+    regions.get(key).push(cluster);
   }
   const selected = [];
-  for (const notes of regions.values()) {
-    const ordered = [...notes].sort((a, b) => annotationSignal(b) - annotationSignal(a) || new Date(b.created_at) - new Date(a.created_at));
-    const ratio = Math.max(0, Math.min(1, (100 - readerState.annotationThreshold) / 100));
-    const visibleCount = readerState.annotationThreshold <= 0 ? ordered.length : Math.max(1, Math.ceil(ordered.length * ratio));
-    const cutoff = annotationSignal(ordered[Math.min(ordered.length - 1, visibleCount - 1)] || {});
-    selected.push(...ordered.filter((note, index) => index < visibleCount || annotationSignal(note) === cutoff));
+  for (const region of regions.values()) {
+    const ordered = [...region].sort((a, b) => b.score - a.score
+      || b.upCount - a.upCount
+      || b.newest - a.newest
+      || a.start - b.start);
+    const visibleCount = Math.max(1, Math.ceil(ordered.length * (100 - readerState.annotationThreshold) / 100));
+    const cutoff = ordered[Math.min(visibleCount, ordered.length) - 1];
+    selected.push(...ordered.filter((cluster) => cluster.score > cutoff.score
+      || (cluster.score === cutoff.score && cluster.upCount >= cutoff.upCount)));
   }
-  return [...privateNotes, ...selected];
-}
-
-function bubbleGroups() {
-  const groups = new Map();
-  for (const note of visibleBubbleNotes()) {
-    const key = annotationClusterKey(note);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(note);
-  }
-  return [...groups.values()].map((notes) => notes.sort((a, b) => annotationSignal(b) - annotationSignal(a)));
+  return [...privateClusters, ...selected].sort(compareAnnotationClusters);
 }
 
 function installBubbleStyles(contents) {
@@ -362,94 +445,129 @@ function installBubbleStyles(contents) {
   const style = contents.document.createElement("style");
   style.id = "mystery-note-bubble-style";
   style.textContent = `
-    .mystery-note-bubble{position:fixed;z-index:2147483000;width:27px;height:27px;border:1px solid rgba(62,39,22,.28);border-radius:50% 50% 50% 5px;display:grid;place-items:center;padding:0;box-shadow:0 3px 9px rgba(30,23,17,.26);font:700 10px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;transform:translateY(-45%);}
-    .mystery-note-bubble.public{background:#d87942;color:#fff;}.mystery-note-bubble.private{background:#5c8da4;color:#fff;}.mystery-note-bubble.mixed{background:linear-gradient(135deg,#5c8da4 0 48%,#d87942 52% 100%);color:#fff;}
+    .mystery-note-bubble{position:fixed;z-index:2147483000;width:24px;height:21px;border:1px solid rgba(62,39,22,.26);border-radius:11px 11px 11px 4px;display:grid;place-items:center;padding:0;box-shadow:0 2px 7px rgba(30,23,17,.22);font:800 9px/1 system-ui,sans-serif;cursor:pointer;touch-action:manipulation;}
+    .mystery-note-bubble::before{content:"";position:absolute;left:5px;top:-4px;width:7px;height:7px;background:inherit;border-left:1px solid rgba(62,39,22,.2);border-top:1px solid rgba(62,39,22,.2);transform:rotate(45deg);}
+    .mystery-note-bubble.public{background:#d87942;color:#fff;}.mystery-note-bubble.private{background:#5c8da4;color:#fff;}
     .mystery-note-bubble:focus{outline:3px solid rgba(220,154,83,.45);outline-offset:2px;}
   `;
   contents.document.head.append(style);
 }
 
-function activateBubble(notes) {
-  const id = notes[0]?.id;
-  if (!id) return;
+function activateBubble(cluster) {
+  const id = cluster?.representative?.id;
+  const key = cluster?.key;
+  if (!id || !key) return;
   const now = Date.now();
-  if (readerState.bubbleTap.id === id && now - readerState.bubbleTap.at < 430) {
+  if (readerState.bubbleTap.id === key && now - readerState.bubbleTap.at < 430) {
     readerState.bubbleTap = { id: null, at: 0 };
-    openAnnotationThread(id);
+    openAnnotationThread(id, { reset: true });
   } else {
-    readerState.bubbleTap = { id, at: now };
-    toast(notes.length > 1 ? `${notes.length} 則標注・再點一下開啟討論` : "再點一下泡泡，開啟標注與留言");
+    readerState.bubbleTap = { id: key, at: now };
+    toast(`再點一下可開啟這組 ${cluster.notes.length} 個局部討論串`);
   }
 }
 
 function renderAnnotationBubbles() {
   if (!readerState.rendition) return;
-  const groups = bubbleGroups();
+  const clusters = visibleBubbleNotes();
   for (const contents of readerState.rendition.getContents?.() || []) {
     installBubbleStyles(contents);
     contents.document.querySelectorAll(".mystery-note-bubble").forEach((node) => node.remove());
     const occupied = new Map();
-    for (const notes of groups) {
-      const representative = notes[0];
+    for (const cluster of clusters) {
+      const note = cluster.representative;
       let range;
-      try { range = contents.range(representative.cfi_range); } catch { continue; }
-      const rect = range?.getBoundingClientRect?.();
+      try { range = contents.range(note.cfi_range); } catch { continue; }
+      const rects = [...(range?.getClientRects?.() || [])].filter((item) => item.width || item.height);
+      const rect = rects.at(-1) || range?.getBoundingClientRect?.();
       if (!rect || (!rect.width && !rect.height)) continue;
       const viewportWidth = contents.window.innerWidth || contents.document.documentElement.clientWidth;
       const viewportHeight = contents.window.innerHeight || contents.document.documentElement.clientHeight;
       if (rect.bottom < 0 || rect.top > viewportHeight || rect.right < 0 || rect.left > viewportWidth) continue;
-      const row = Math.round(rect.top / 22);
+      const row = Math.round(rect.bottom / 22);
       const lane = occupied.get(row) || 0;
       occupied.set(row, lane + 1);
       const button = contents.document.createElement("button");
-      const visibilities = new Set(notes.map((note) => note.visibility));
       button.type = "button";
-      button.className = `mystery-note-bubble ${visibilities.size > 1 ? "mixed" : representative.visibility}`;
-      button.textContent = notes.length > 1 ? String(notes.length) : "✦";
-      button.title = `${notes.length} 則標注；點兩下開啟討論`;
-      button.setAttribute("aria-label", `${notes.length} 則標注，點兩下開啟討論`);
-      button.style.left = `${Math.max(4, Math.min(viewportWidth - 31, rect.right + 5 + lane * 29))}px`;
-      button.style.top = `${Math.max(16, Math.min(viewportHeight - 16, rect.top + Math.min(rect.height, 24) / 2))}px`;
-      button.addEventListener("pointerup", (event) => { event.preventDefault(); event.stopPropagation(); activateBubble(notes); });
+      button.className = `mystery-note-bubble ${cluster.visibility}`;
+      button.dataset.noteId = note.id;
+      button.dataset.clusterKey = cluster.key;
+      button.textContent = String(Math.min(99, cluster.notes.length));
+      button.title = "點兩下開啟這一組局部討論串";
+      const replyCount = cluster.notes.reduce((total, item) => total + (item.replies?.length || 0), 0);
+      button.setAttribute("aria-label", `${cluster.notes.length} 個局部討論串、${replyCount} 則回覆；點兩下開啟`);
+      button.style.left = `${Math.max(4, Math.min(viewportWidth - 28, rect.right - 9 + lane * 26))}px`;
+      button.style.top = `${Math.max(5, Math.min(viewportHeight - 24, rect.bottom + 4))}px`;
+      button.addEventListener("pointerup", (event) => { event.preventDefault(); event.stopPropagation(); activateBubble(cluster); });
       contents.document.body.append(button);
     }
   }
 }
 
-function fusedAnnotationOrder(notes) {
-  const bySignal = [...notes].sort((a, b) => annotationSignal(b) - annotationSignal(a));
-  const byNewest = [...notes].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-  const result = [];
-  const add = (note) => { if (note && !result.some((item) => item.id === note.id)) result.push(note); };
-  [bySignal[0], bySignal[1], byNewest[0], bySignal[2], byNewest[1], bySignal[3], byNewest[2]].forEach(add);
-  byNewest.forEach(add);
-  return result;
+function compareReplies(a, b) {
+  if (readerState.replySort === "latest") return new Date(b.created_at) - new Date(a.created_at);
+  return Number(b.score || 0) - Number(a.score || 0)
+    || Number(b.upCount || 0) - Number(a.upCount || 0)
+    || new Date(b.created_at) - new Date(a.created_at);
 }
 
-function annotationThreadCard(note, index) {
-  const replies = [...(note.replies || [])].sort((a, b) => Number(b.score || 0) - Number(a.score || 0) || new Date(b.created_at) - new Date(a.created_at));
-  return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
-    <div class="thread-note-order"><span>${String(index + 1).padStart(2, "0")}</span><small>${index === 0 ? "融合排序首位" : "相關標注"}</small></div>
-    <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
-    ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
-    <p>${escapeHtml(note.content)}</p>
-    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}">▲ 讚賞</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}">▼</button><span>${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}">${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
-    <div class="thread-note-replies"><h3>${replies.length} 則${note.visibility === "private" ? "私人補充" : "留言"}</h3>${replies.map((reply) => `<div class="thread-note-reply"><header><img src="${escapeHtml(avatarFor(reply.author))}" alt=""><strong>${escapeHtml(reply.author?.public_display_name || "讀者")}</strong><time>${new Date(reply.created_at).toLocaleString("zh-TW")}</time></header><p>${escapeHtml(reply.content)}</p>${reply.score != null ? `<button data-reply-vote="up" data-reply-id="${reply.id}" class="${reply.viewerVote === "up" ? "active" : ""}">▲ ${reply.score}</button>` : ""}</div>`).join("") || '<p class="muted">尚無留言。</p>'}</div><form class="reply-form thread-reply-form" data-reply-form="${note.id}"><input maxlength="2000" aria-label="回覆標注" placeholder="${note.visibility === "private" ? "補充這則私人標注…" : "回覆這則標注…"}"><button type="submit">送出</button></form>
+function annotationReplyTree(replies) {
+  const nodes = new Map((replies || []).map((reply) => [reply.id, { ...reply, children: [] }]));
+  const roots = [];
+  for (const reply of nodes.values()) {
+    const parent = reply.parent_reply_id ? nodes.get(reply.parent_reply_id) : null;
+    if (parent && parent.id !== reply.id) parent.children.push(reply);
+    else roots.push(reply);
+  }
+  const sortBranch = (branch) => branch.sort(compareReplies).map((reply) => ({ ...reply, children: sortBranch(reply.children) }));
+  return sortBranch(roots);
+}
+
+function annotationReplyMarkup(reply, depth = 0) {
+  const votePending = readerState.annotationMutationPending.has(`reply-vote:${reply.id}`);
+  return `<article class="thread-note-reply" data-reply-id="${escapeHtml(reply.id)}" style="--reply-depth:${Math.min(depth, 5)}">
+    <header><img src="${escapeHtml(avatarFor(reply.author))}" alt=""><strong>${escapeHtml(reply.author?.public_display_name || "讀者")}</strong><time>${new Date(reply.created_at).toLocaleString("zh-TW")}</time></header>
+    <p>${escapeHtml(reply.content)}</p>
+    <div class="reply-actions"><button type="button" data-reply-vote="up" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "up" ? "active" : ""}" aria-pressed="${reply.viewerVote === "up"}"${votePending ? " disabled" : ""}>▲ ${Number(reply.upCount) || 0}</button><button type="button" data-reply-vote="down" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "down" ? "active down" : "down"}" aria-pressed="${reply.viewerVote === "down"}"${votePending ? " disabled" : ""}>▼ ${Number(reply.downCount) || 0}</button><span>${Number(reply.score) >= 0 ? "+" : ""}${Number(reply.score) || 0}</span><button type="button" data-reply-target="${escapeHtml(reply.id)}" data-reply-author="${escapeHtml(reply.author?.public_display_name || "讀者")}">回覆</button></div>
+    ${reply.children.map((child) => annotationReplyMarkup(child, depth + 1)).join("")}
   </article>`;
 }
 
-function openAnnotationThread(noteId) {
+function annotationThreadCard(note) {
+  const replies = annotationReplyTree(note.replies || []);
+  const parentReply = readerState.replyParentId ? note.replies?.find((reply) => reply.id === readerState.replyParentId) : null;
+  const votePending = readerState.annotationMutationPending.has(`note-vote:${note.id}`);
+  const favoritePending = readerState.annotationMutationPending.has(`note-favorite:${note.id}`);
+  const replyPending = readerState.annotationMutationPending.has(`note-reply:${note.id}`);
+  return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
+    <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
+    ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
+    <p>${escapeHtml(note.content)}</p>
+    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}"${votePending ? " disabled" : ""}>▲ ${Number(note.upCount) || 0}</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}"${votePending ? " disabled" : ""}>▼ ${Number(note.downCount) || 0}</button><span>淨分 ${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}"${favoritePending ? " disabled" : ""}>${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
+    <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div>${replies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>
+    <form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>
+  </article>`;
+}
+
+function annotationClusterForNote(noteId) {
+  return annotationClusters().find((cluster) => cluster.notes.some((note) => note.id === noteId)) || null;
+}
+
+function openAnnotationThread(noteId, { reset = false } = {}) {
   const selected = readerState.annotations.find((note) => note.id === noteId);
-  if (!selected) return;
-  const related = readerState.annotations.filter((note) => annotationClusterKey(note) === annotationClusterKey(selected));
-  const ordered = fusedAnnotationOrder(related);
-  const selectedIndex = ordered.findIndex((note) => note.id === noteId);
-  if (selectedIndex > 0) ordered.unshift(...ordered.splice(selectedIndex, 1));
+  const cluster = selected ? annotationClusterForNote(noteId) : null;
+  if (!selected || !cluster) return;
+  if (reset || readerState.activeThreadNoteId !== noteId) {
+    readerState.replySort = "best";
+    readerState.replyParentId = null;
+  }
   readerState.activeThreadNoteId = noteId;
-  document.getElementById("annotation-thread-rank").textContent = related.length > 1
-    ? `此處共有 ${related.length} 則獨立標注；依讚賞、收藏、回覆與新鮮度融合排序。`
-    : "這是一則獨立標注；所有留言與互動都收在這裡。";
-  document.getElementById("annotation-thread-content").innerHTML = ordered.map(annotationThreadCard).join("");
+  const rangeLabel = cluster.clusterIndex === null
+    ? "舊版獨立定位"
+    : `起始位置第 ${cluster.clusterIndex * ANNOTATION_CLUSTER_SIZE + 1}–${(cluster.clusterIndex + 1) * ANNOTATION_CLUSTER_SIZE} 個字詞`;
+  const replyCount = cluster.notes.reduce((total, note) => total + (note.replies?.length || 0), 0);
+  document.getElementById("annotation-thread-rank").textContent = `${rangeLabel}聚合，共 ${cluster.notes.length} 個獨立討論串、${replyCount} 則回覆；討論串與回覆皆依淨分、讚數和時間排序。`;
+  document.getElementById("annotation-thread-content").innerHTML = cluster.notes.map(annotationThreadCard).join("");
   const dialog = document.getElementById("annotation-thread-dialog");
   if (!dialog.open) dialog.showModal();
 }
@@ -458,10 +576,7 @@ async function loadAnnotations() {
   try {
     const result = await window.libraryApi.get(`/books/${encodeURIComponent(bookId)}/annotations`);
     readerState.annotations = result.annotations;
-    document.getElementById("annotation-count").textContent = result.annotations.filter((note) => note.visibility === "public").length;
-    renderHighlights();
     renderAnnotationBubbles();
-    renderAnnotations();
     if (readerState.activeThreadNoteId && document.getElementById("annotation-thread-dialog").open) openAnnotationThread(readerState.activeThreadNoteId);
     const requested = !readerState.requestedNoteHandled && requestedNoteId && readerState.annotations.find((note) => note.id === requestedNoteId);
     if (requested) {
@@ -470,52 +585,9 @@ async function loadAnnotations() {
       openAnnotationThread(requested.id);
     }
   } catch (error) {
-    document.getElementById("annotation-list").innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
+    console.warn("Unable to load annotations.", error);
+    toast(error.message, "error");
   }
-}
-
-function renderHighlights() {
-  if (!readerState.rendition) return;
-  for (const cfi of readerState.renderedCfis) {
-    try { readerState.rendition.annotations.remove(cfi, "highlight"); } catch {}
-  }
-  readerState.renderedCfis.clear();
-  for (const note of readerState.annotations) {
-    try {
-      readerState.rendition.annotations.highlight(
-        note.cfi_range,
-        { annotationId: note.id },
-        () => openAnnotationThread(note.id),
-        `reader-annotation-${note.visibility}`,
-        { fill: note.visibility === "private" ? "#4f87a3" : "#d47a3c", "fill-opacity": "0.3", "mix-blend-mode": "multiply" },
-      );
-      readerState.renderedCfis.add(note.cfi_range);
-    } catch {}
-  }
-}
-
-function renderAnnotations() {
-  const list = document.getElementById("annotation-list");
-  const notes = readerState.noteFilter === "chapter"
-    ? readerState.annotations.filter((note) => note.chapter_href?.split("#")[0] === readerState.currentHref?.split("#")[0])
-    : readerState.annotations;
-  if (!notes.length) {
-    list.innerHTML = '<p class="muted">這裡還沒有標注。選取一段文字，留下第一個線索。</p>';
-    return;
-  }
-  list.innerHTML = notes.map((note) => `<article class="annotation-card ${note.visibility}" data-annotation-id="${note.id}" data-cfi="${escapeHtml(note.cfi_range)}">
-    <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleDateString("zh-TW")}</time></div>
-    ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
-    <p>${escapeHtml(note.content)}</p>
-    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞標注">▲</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不贊同標注">▼</button><span>${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}">${note.viewerFavorite ? "♥" : "♡"} ${note.favoriteCount}</button>` : ""}<span>· ${note.visibility === "private" ? `私人・${note.replies.length} 則留言` : `${note.replies.length} 則回覆`}</span></div>
-    <div class="annotation-replies">${note.replies.map((reply) => `<div class="annotation-reply"><strong>${escapeHtml(reply.author.public_display_name || "讀者")}${["admin", "moderator"].includes(reply.author.role) ? "・館員" : ""}</strong>${escapeHtml(reply.content)}</div>`).join("")}</div><form class="reply-form" data-reply-form="${note.id}"><input maxlength="2000" aria-label="回覆標注" placeholder="${note.visibility === "private" ? "補充這則私人標注…" : "回覆這則標注…"}"><button type="submit">送出</button></form>
-  </article>`).join("");
-}
-
-function openAnnotationPanel() {
-  document.getElementById("annotation-panel").hidden = false;
-  document.getElementById("toc-panel").hidden = true;
-  syncAnnotationRealtime(true);
 }
 
 function syncAnnotationRealtime(active) {
@@ -547,7 +619,6 @@ async function submitAnnotation(event) {
     document.getElementById("selection-action").hidden = true;
     readerState.selected = null;
     await loadAnnotations();
-    openAnnotationPanel();
     toast("標注已儲存");
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
@@ -555,37 +626,67 @@ async function submitAnnotation(event) {
 
 async function voteAnnotation(id, voteType) {
   if (!ensureLogin()) return;
+  const pendingKey = `note-vote:${id}`;
+  if (readerState.annotationMutationPending.has(pendingKey)) return;
   const note = readerState.annotations.find((item) => item.id === id);
+  readerState.annotationMutationPending.add(pendingKey);
+  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
   try {
     await window.libraryApi.post(`/annotations/${id}/vote`, { voteType: note?.viewerVote === voteType ? "none" : voteType });
     await loadAnnotations();
   } catch (error) { toast(error.message, "error"); }
+  finally {
+    readerState.annotationMutationPending.delete(pendingKey);
+    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  }
 }
 
 async function favoriteAnnotation(id) {
   if (!ensureLogin()) return;
+  const pendingKey = `note-favorite:${id}`;
+  if (readerState.annotationMutationPending.has(pendingKey)) return;
+  readerState.annotationMutationPending.add(pendingKey);
+  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
   try {
     await window.libraryApi.post(`/annotations/${id}/favorite`);
     await loadAnnotations();
   } catch (error) { toast(error.message, "error"); }
+  finally {
+    readerState.annotationMutationPending.delete(pendingKey);
+    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  }
 }
 
-async function replyAnnotation(id, content) {
+async function replyAnnotation(id, content, parentReplyId = null) {
   if (!ensureLogin()) return;
+  const pendingKey = `note-reply:${id}`;
+  if (readerState.annotationMutationPending.has(pendingKey)) return;
+  readerState.annotationMutationPending.add(pendingKey);
   try {
-    await window.libraryApi.post(`/annotations/${id}/replies`, { content });
+    await window.libraryApi.post(`/annotations/${id}/replies`, { content, parentReplyId });
+    readerState.replyParentId = null;
     await loadAnnotations();
     toast("回覆已送出");
-  } catch (error) { toast(error.message, "error"); }
+    return true;
+  } catch (error) { toast(error.message, "error"); return false; }
+  finally { readerState.annotationMutationPending.delete(pendingKey); }
 }
 
 async function voteAnnotationReply(replyId, voteType) {
   if (!ensureLogin()) return;
+  const pendingKey = `reply-vote:${replyId}`;
+  if (readerState.annotationMutationPending.has(pendingKey)) return;
   const reply = readerState.annotations.flatMap((note) => note.replies || []).find((item) => item.id === replyId);
+  readerState.annotationMutationPending.add(pendingKey);
+  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
   try {
     await window.libraryApi.post(`/annotation-replies/${encodeURIComponent(replyId)}/vote`, { voteType: reply?.viewerVote === voteType ? "none" : voteType });
     await loadAnnotations();
   } catch (error) { toast(error.message, "error"); }
+  finally {
+    readerState.annotationMutationPending.delete(pendingKey);
+    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  }
 }
 
 function selectTheme(theme) {
@@ -600,8 +701,7 @@ function wireControls() {
   for (const id of ["previous-page", "footer-prev"]) document.getElementById(id).addEventListener("click", previous);
   for (const id of ["next-page", "footer-next"]) document.getElementById(id).addEventListener("click", next);
   document.addEventListener("keydown", handlePageKey);
-  document.getElementById("toc-toggle").addEventListener("click", () => { const panel = document.getElementById("toc-panel"); panel.hidden = !panel.hidden; document.getElementById("annotation-panel").hidden = true; });
-  document.getElementById("annotation-toggle").addEventListener("click", () => { const panel = document.getElementById("annotation-panel"); panel.hidden = !panel.hidden; document.getElementById("toc-panel").hidden = true; syncAnnotationRealtime(!panel.hidden); });
+  document.getElementById("toc-toggle").addEventListener("click", () => { const panel = document.getElementById("toc-panel"); panel.hidden = !panel.hidden; });
   document.querySelectorAll("[data-close-panel]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.closePanel).hidden = true; }));
   document.getElementById("settings-toggle").addEventListener("click", () => { const panel = document.getElementById("settings-panel"); panel.hidden = !panel.hidden; });
   document.getElementById("toc-list").addEventListener("click", (event) => { const button = event.target.closest("[data-toc-href]"); if (!button) return; readerState.rendition.display(button.dataset.tocHref); document.getElementById("toc-panel").hidden = true; });
@@ -632,25 +732,37 @@ function wireControls() {
   });
   document.getElementById("annotation-form").addEventListener("submit", submitAnnotation);
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
-  document.querySelector(".annotation-filter").addEventListener("click", (event) => { const button = event.target.closest("[data-note-filter]"); if (!button) return; readerState.noteFilter = button.dataset.noteFilter; document.querySelectorAll("[data-note-filter]").forEach((item) => item.classList.toggle("active", item === button)); renderAnnotations(); });
-  document.getElementById("annotation-list").addEventListener("click", (event) => {
-    const vote = event.target.closest("[data-note-vote]");
-    if (vote) { event.stopPropagation(); voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
-    const favorite = event.target.closest("[data-note-favorite]");
-    if (favorite) { event.stopPropagation(); favoriteAnnotation(favorite.dataset.noteFavorite); return; }
-    const card = event.target.closest("[data-cfi]");
-    if (card && !event.target.closest("form,button,input")) readerState.rendition.display(card.dataset.cfi);
-  });
-  document.getElementById("annotation-list").addEventListener("submit", (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); if (input.value.trim()) replyAnnotation(form.dataset.replyForm, input.value); });
   document.getElementById("annotation-thread-content").addEventListener("click", (event) => {
     const vote = event.target.closest("[data-note-vote]");
     if (vote) { voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
     const favorite = event.target.closest("[data-note-favorite]");
     if (favorite) { favoriteAnnotation(favorite.dataset.noteFavorite); return; }
     const replyVote = event.target.closest("[data-reply-vote]");
-    if (replyVote) voteAnnotationReply(replyVote.dataset.replyId, replyVote.dataset.replyVote);
+    if (replyVote) { voteAnnotationReply(replyVote.dataset.replyId, replyVote.dataset.replyVote); return; }
+    const sort = event.target.closest("[data-reply-sort]");
+    if (sort && readerState.activeThreadNoteId) {
+      readerState.replySort = sort.dataset.replySort;
+      openAnnotationThread(readerState.activeThreadNoteId);
+      return;
+    }
+    const replyTarget = event.target.closest("[data-reply-target]");
+    if (replyTarget && readerState.activeThreadNoteId) {
+      const noteCard = replyTarget.closest("[data-thread-note-id]");
+      if (noteCard?.dataset.threadNoteId) readerState.activeThreadNoteId = noteCard.dataset.threadNoteId;
+      readerState.replyParentId = replyTarget.dataset.replyTarget;
+      openAnnotationThread(readerState.activeThreadNoteId);
+      [...document.querySelectorAll("#annotation-thread-content [data-thread-note-id]")]
+        .find((node) => node.dataset.threadNoteId === readerState.activeThreadNoteId)
+        ?.querySelector(".thread-reply-form input")?.focus();
+      return;
+    }
+    if (event.target.closest("[data-cancel-reply]") && readerState.activeThreadNoteId) {
+      readerState.replyParentId = null;
+      openAnnotationThread(readerState.activeThreadNoteId);
+    }
   });
-  document.getElementById("annotation-thread-content").addEventListener("submit", (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); if (input.value.trim()) replyAnnotation(form.dataset.replyForm, input.value); });
+  document.getElementById("annotation-thread-content").addEventListener("submit", async (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); const button = form.querySelector('button[type="submit"]'); if (!input.value.trim()) return; input.disabled = true; button.disabled = true; const sent = await replyAnnotation(form.dataset.replyForm, input.value, form.dataset.parentReplyId || null); if (!sent && form.isConnected) { input.disabled = false; button.disabled = false; input.focus(); } });
+  document.getElementById("annotation-thread-dialog").addEventListener("close", () => { readerState.activeThreadNoteId = null; readerState.replyParentId = null; });
   document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) location.href = "/account.html"; else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
   window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; if (readerState.rendition) { loadAnnotations(); if (event.detail.user) persistProgress(); } });
   window.addEventListener("focus", () => { if (readerState.rendition) loadAnnotations(); });
@@ -670,7 +782,6 @@ async function initialize() {
     const record = await loadBookRecord();
     await initializeEpub(record);
     await loadAnnotations();
-    syncAnnotationRealtime(true);
     document.getElementById("theme-select").value = localStorage.getItem("mystery-library:theme") || "publisher";
     const savedThreshold = localStorage.getItem("mystery-library:annotation-threshold");
     readerState.annotationThreshold = Math.max(0, Math.min(100, Number(savedThreshold ?? 50)));
@@ -683,6 +794,7 @@ async function initialize() {
     document.getElementById("annotation-threshold").value = String(readerState.annotationThreshold);
     document.getElementById("annotation-threshold-output").value = `${readerState.annotationThreshold}%`;
     renderAnnotationBubbles();
+    syncAnnotationRealtime(true);
   } catch (error) {
     console.error(error);
     document.getElementById("epub-viewer").innerHTML = `<div class="reader-loading"><span class="loading-mark">!</span><p>${escapeHtml(error.message)}</p><a href="/">回到書庫</a></div>`;

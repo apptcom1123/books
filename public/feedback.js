@@ -4,6 +4,9 @@ const feedbackState = {
   activeId: null,
   query: "",
   votePending: new Set(),
+  realtimeStop: null,
+  refreshTimer: null,
+  refreshThreadIds: new Set(),
 };
 
 const feedbackElements = {
@@ -178,6 +181,45 @@ async function loadFeedback({ preserveThread = true } = {}) {
   }
 }
 
+async function refreshFeedbackThreads(ids) {
+  const threadIds = [...new Set(ids)].filter(Boolean);
+  if (!threadIds.length) return;
+  if (threadIds.length > 4) return loadFeedback();
+  try {
+    const results = await Promise.all(threadIds.map((id) => window.libraryApi.get(`/feedback?thread=${encodeURIComponent(id)}`)));
+    feedbackState.messages = feedbackState.messages.filter((message) => !threadIds.includes(message.id) && !threadIds.includes(message.parent_id));
+    feedbackState.messages.push(...results.flatMap((result) => result.messages || []));
+    renderFeedbackViews();
+  } catch (error) {
+    if (navigator.onLine) console.warn("Feedback delta refresh failed", error);
+  }
+}
+
+function syncFeedbackRealtime() {
+  if (feedbackState.realtimeStop || !window.libraryRealtime) return;
+  feedbackState.realtimeStop = window.libraryRealtime.subscribeFeedback(({ events, reason }) => {
+    if (reason === "overflow") {
+      clearTimeout(feedbackState.refreshTimer);
+      feedbackState.refreshThreadIds.clear();
+      loadFeedback();
+      return;
+    }
+    if (!events.length) {
+      if (reason === "catchup-truncated") loadFeedback();
+      return;
+    }
+    for (const event of events) {
+      if (["feedback", "feedback_vote"].includes(event.resource) && event.targetId) feedbackState.refreshThreadIds.add(event.targetId);
+    }
+    clearTimeout(feedbackState.refreshTimer);
+    feedbackState.refreshTimer = setTimeout(() => {
+      const ids = [...feedbackState.refreshThreadIds];
+      feedbackState.refreshThreadIds.clear();
+      refreshFeedbackThreads(ids);
+    }, 280);
+  });
+}
+
 function renderAuth(user) {
   document.getElementById("login-button").hidden = Boolean(user);
   const menu = document.getElementById("user-menu");
@@ -251,6 +293,7 @@ async function initializeFeedback() {
   await window.libraryAuth.ready;
   renderAuth(window.libraryAuth.user);
   await loadFeedback({ preserveThread: false });
+  syncFeedbackRealtime();
   const requestedThread = new URLSearchParams(location.search).get("thread");
   if (requestedThread) openThread(requestedThread, { updateUrl: false });
 }
