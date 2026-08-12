@@ -5,7 +5,7 @@ const router = express.Router();
 
 router.get("/", async (req, res, next) => {
   try {
-    const messages = await req.app.locals.repositories.library.listFeedback(req.user?.userId);
+    const messages = await req.repositories.library.listFeedback(req.user?.userId);
     res.json({ messages, count: messages.length });
   } catch (error) {
     next(error);
@@ -14,7 +14,7 @@ router.get("/", async (req, res, next) => {
 
 router.post("/", requireAuth, async (req, res, next) => {
   try {
-    const messages = await req.app.locals.repositories.library.createFeedback(req.user.userId, req.body || {});
+    const messages = await req.repositories.library.createFeedback(req.user.userId, req.body || {});
     res.status(201).json({ messages });
   } catch (error) {
     next(error);

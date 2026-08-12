@@ -20,8 +20,8 @@ npm run dev
 
 1. 若仍使用 `YZ_json` 的 Supabase project，保留既有 `public.users`。
 2. 在 SQL Editor 執行 `server/db/library-schema.sql`。
-3. 在 `.env` 設定 `SUPABASE_URL` 與 server-only `SUPABASE_SERVICE_KEY`。
-4. 執行 `npm run seed` 匯入館藏 metadata。
+3. 執行 `npm run seed` 產生 `server/db/library-seed.sql`，再於 SQL Editor 執行該檔案。
+4. 在 `.env` 設定 Supabase URL 與 publishable key；網站 runtime 不使用 secret/service-role key。
 5. Authentication → Providers 啟用 Google。
 6. URL Configuration 加入：
 
@@ -35,13 +35,12 @@ Google Cloud 的 Authorized redirect URI 使用 Supabase 顯示的 `/auth/v1/cal
 ## Vercel 環境變數
 
 ```text
-SUPABASE_URL
-SUPABASE_KEY
-SUPABASE_SERVICE_KEY
-APP_ORIGIN=https://你的網域.vercel.app
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+# APP_ORIGIN=https://你的網域.vercel.app（選用；自訂網域或跨網域呼叫時設定）
 ```
 
-`SUPABASE_SERVICE_KEY` 不得放入 `public/`、catalog、前端環境變數或 Git。
+也支援不帶 `NEXT_PUBLIC_` 的 `SUPABASE_URL`＋`SUPABASE_PUBLISHABLE_KEY`。兩組名稱擇一即可，不要填 secret/service-role key。Google Client ID 與 Client Secret 只設定在 Supabase Google Provider。
 
 ## 館藏更新
 

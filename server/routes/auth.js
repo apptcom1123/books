@@ -4,8 +4,8 @@ const router = express.Router();
 
 router.get("/config", (_req, res) => {
   res.json({
-    supabaseUrl: process.env.SUPABASE_URL,
-    supabasePublishableKey: process.env.SUPABASE_KEY,
+    supabaseUrl: _req.app.locals.supabaseUrl,
+    supabasePublishableKey: _req.app.locals.supabasePublishableKey,
   });
 });
 

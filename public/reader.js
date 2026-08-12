@@ -14,6 +14,7 @@ const readerState = {
   noteFilter: "all",
   fontSize: 100,
   saveTimer: null,
+  turning: false,
 };
 
 function escapeHtml(value = "") {
@@ -89,11 +90,34 @@ function renderToc(items, depth = 0) {
 
 async function initializeEpub(record) {
   if (!window.ePub) throw new Error("EPUB 閱讀器載入失敗");
-  readerState.epub = window.ePub(record.epub_url, { openAs: "epub" });
+  const loadingMessage = document.querySelector(".reader-loading p");
+  if (loadingMessage) loadingMessage.textContent = "正在下載並檢查電子書…";
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let response;
+  try {
+    response = await fetch(record.epub_url, { cache: "force-cache", signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("電子書下載逾時，請檢查網路後重試。");
+    throw new Error(`電子書下載失敗：${error.message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`找不到電子書檔案（HTTP ${response.status}）。請重新執行建置並確認 EPUB 已部署。`);
+  const epubData = await response.arrayBuffer();
+  const signature = new Uint8Array(epubData, 0, Math.min(4, epubData.byteLength));
+  if (epubData.byteLength < 58 || signature[0] !== 0x50 || signature[1] !== 0x4b || signature[2] !== 0x03 || signature[3] !== 0x04) {
+    throw new Error("下載到的檔案不是有效的 EPUB（ZIP）格式。");
+  }
+  if (loadingMessage) loadingMessage.textContent = "正在還原原書排版與圖片…";
+  // ArrayBuffer must be opened as binary; forcing "epub" makes epub.js try
+  // to issue a second network request with the ArrayBuffer as its URL.
+  readerState.epub = window.ePub(epubData, { openAs: "binary" });
+  await readerState.epub.ready;
   readerState.rendition = readerState.epub.renderTo("epub-viewer", {
     width: "100%",
     height: "100%",
-    manager: "continuous",
+    manager: "default",
     flow: "paginated",
     spread: "auto",
     minSpreadWidth: 900,
@@ -104,7 +128,14 @@ async function initializeEpub(record) {
 
   const local = JSON.parse(localStorage.getItem(localProgressKey()) || "null");
   const target = record.viewer.progress?.cfi || local?.cfi || undefined;
-  await readerState.rendition.display(target).catch(() => readerState.rendition.display());
+  try {
+    await readerState.rendition.display(target);
+  } catch (error) {
+    if (!target) throw error;
+    localStorage.removeItem(localProgressKey());
+    await readerState.rendition.display();
+  }
+  await assertRenderedEpub();
   document.querySelector(".reader-loading")?.remove();
 
   readerState.epub.loaded.navigation.then((navigation) => {
@@ -118,8 +149,59 @@ async function initializeEpub(record) {
   }).catch(() => {});
 }
 
+async function assertRenderedEpub() {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const contents = readerState.rendition?.getContents?.() || [];
+    if (contents.some((content) => content.document?.documentElement && content.document?.body)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("EPUB 已下載，但內文頁面沒有完成渲染。請重新整理後再試。");
+}
+
+function isTypingTarget(target) {
+  return Boolean(target?.closest?.("input, textarea, select, [contenteditable='true']"));
+}
+
+function handlePageKey(event) {
+  if (isTypingTarget(event.target) || event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    turnPage("previous");
+  } else if (event.key === "ArrowRight" || event.key === " ") {
+    event.preventDefault();
+    turnPage("next");
+  }
+}
+
+async function turnPage(direction) {
+  if (!readerState.rendition || readerState.turning) return;
+  readerState.turning = true;
+  const viewer = document.getElementById("epub-viewer");
+  viewer.dataset.turning = direction;
+  try {
+    await readerState.rendition[direction === "previous" ? "prev" : "next"]();
+  } catch (error) {
+    console.error("Unable to turn EPUB page.", error);
+    toast("這一頁暫時無法翻動，請稍後再試。", "error");
+  } finally {
+    readerState.turning = false;
+    delete viewer.dataset.turning;
+  }
+}
+
 function registerThemes() {
   const themes = readerState.rendition.themes;
+  themes.default({
+    "section.epub-type-contains-word-titlepage h1, section.epub-type-contains-word-titlepage p, section.epub-type-contains-word-colophon h2, section.epub-type-contains-word-imprint h2": {
+      left: "0 !important",
+      width: "1px !important",
+      height: "1px !important",
+      overflow: "hidden !important",
+      clip: "rect(0 0 0 0) !important",
+      "clip-path": "inset(50%) !important",
+      "white-space": "nowrap !important",
+    },
+  });
   themes.register("publisher", {});
   themes.register("paper", {
     body: { color: "#24231f !important", background: "#f8f2e8 !important", "font-family": 'Georgia, "Noto Serif TC", serif !important', padding: "0 3% !important" },
@@ -139,7 +221,14 @@ function registerThemes() {
 }
 
 function wireRenditionEvents() {
-  readerState.rendition.on("relocated", (location) => updateProgress(location));
+  readerState.rendition.hooks.content.register((contents) => {
+    contents.document.addEventListener("keydown", handlePageKey);
+  });
+  readerState.rendition.on("relocated", (location) => {
+    updateProgress(location);
+    for (const id of ["previous-page", "footer-prev"]) document.getElementById(id).disabled = Boolean(location.atStart);
+    for (const id of ["next-page", "footer-next"]) document.getElementById(id).disabled = Boolean(location.atEnd);
+  });
   readerState.rendition.on("selected", (cfiRange, contents) => {
     const quote = contents.window.getSelection()?.toString().replace(/\s+/g, " ").trim().slice(0, 600) || "";
     if (!quote) return;
@@ -148,10 +237,6 @@ function wireRenditionEvents() {
     document.getElementById("annotation-content").value = "";
     if (ensureLogin()) document.getElementById("annotation-dialog").showModal();
     contents.window.getSelection()?.removeAllRanges();
-  });
-  readerState.rendition.on("keyup", (event) => {
-    if (event.key === "ArrowLeft") readerState.rendition.prev();
-    if (event.key === "ArrowRight") readerState.rendition.next();
   });
 }
 
@@ -282,11 +367,11 @@ function selectTheme(theme) {
 }
 
 function wireControls() {
-  const previous = () => readerState.rendition?.prev();
-  const next = () => readerState.rendition?.next();
+  const previous = () => turnPage("previous");
+  const next = () => turnPage("next");
   for (const id of ["previous-page", "footer-prev"]) document.getElementById(id).addEventListener("click", previous);
   for (const id of ["next-page", "footer-next"]) document.getElementById(id).addEventListener("click", next);
-  document.addEventListener("keydown", (event) => { if (event.target.matches("input,textarea,select")) return; if (event.key === "ArrowLeft") previous(); if (event.key === "ArrowRight" || event.key === " ") { event.preventDefault(); next(); } });
+  document.addEventListener("keydown", handlePageKey);
   document.getElementById("toc-toggle").addEventListener("click", () => { const panel = document.getElementById("toc-panel"); panel.hidden = !panel.hidden; document.getElementById("annotation-panel").hidden = true; });
   document.getElementById("annotation-toggle").addEventListener("click", () => { const panel = document.getElementById("annotation-panel"); panel.hidden = !panel.hidden; document.getElementById("toc-panel").hidden = true; });
   document.querySelectorAll("[data-close-panel]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.closePanel).hidden = true; }));

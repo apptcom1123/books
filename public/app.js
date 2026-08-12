@@ -1,7 +1,11 @@
+const PAGE_SIZE = 30;
+
 const state = {
   books: [],
   filters: { q: "", category: "", source: "", sort: "popular", favoritesOnly: false },
   loading: false,
+  requestId: 0,
+  pagination: { total: 0, hasMore: false },
   feedback: [],
 };
 
@@ -16,6 +20,8 @@ const elements = {
   sort: document.getElementById("sort-select"),
   activeFilter: document.getElementById("active-filter"),
   favoriteFilter: document.getElementById("favorites-filter"),
+  loadMoreWrap: document.getElementById("load-more-wrap"),
+  loadMoreButton: document.getElementById("load-more-button"),
   feedbackList: document.getElementById("feedback-list"),
   feedbackDialog: document.getElementById("feedback-dialog"),
   feedbackForm: document.getElementById("feedback-form"),
@@ -81,7 +87,10 @@ function renderBooks() {
   elements.empty.hidden = visible.length > 0;
   elements.grid.hidden = visible.length === 0;
   const label = state.filters.favoritesOnly ? "收藏中" : "館藏中";
-  elements.summary.textContent = `${label}顯示 ${visible.length} 本作品`;
+  elements.summary.textContent = `${label}顯示 ${visible.length} 本${state.filters.favoritesOnly ? "已載入作品" : `／共 ${state.pagination.total} 本`}`;
+  elements.loadMoreWrap.hidden = !state.pagination.hasMore;
+  elements.loadMoreButton.disabled = state.loading;
+  elements.loadMoreButton.textContent = state.loading ? "正在整理下一批…" : state.filters.favoritesOnly ? "載入更多以尋找收藏" : `再顯示 ${Math.min(PAGE_SIZE, Math.max(0, state.pagination.total - state.books.length))} 本`;
   elements.activeFilter.hidden = !(state.filters.q || state.filters.favoritesOnly);
   elements.activeFilter.textContent = state.filters.favoritesOnly
     ? "目前只顯示你的收藏"
@@ -93,7 +102,7 @@ function renderCategories(categories) {
   elements.categories.innerHTML = all.map((category) => `<button class="category-chip${state.filters.category === category ? " active" : ""}" type="button" data-category="${escapeHtml(category)}">${category || "全部"}</button>`).join("");
 }
 
-async function loadStaticCatalog() {
+async function loadStaticCatalog({ limit, offset }) {
   const response = await fetch("/data/catalog.json");
   if (!response.ok) throw new Error("無法載入離線館藏");
   const query = state.filters.q.toLocaleLowerCase("zh-Hant");
@@ -107,13 +116,23 @@ async function loadStaticCatalog() {
   }).map((book) => ({ ...book, metrics: { readerCount: 0, ratingCount: 0, averageRating: 0, favoriteCount: 0, annotationCount: 0 }, viewer: { rating: 0, isFavorite: false, progress: JSON.parse(localStorage.getItem(`mystery-library:progress:${book.id}`) || "null") } }));
   if (state.filters.sort === "title") books.sort((a, b) => a.title_zh.localeCompare(b.title_zh, "zh-Hant"));
   else if (state.filters.sort === "newest") books.sort((a, b) => String(b.edition_release_date).localeCompare(String(a.edition_release_date)));
-  return { books, pagination: { total: books.length }, filters: { categories: ["Literature", "Science & Technology", "History", "Social Sciences & Society", "Arts & Culture", "Religion & Philosophy", "Lifestyle & Hobbies", "Health & Medicine"] } };
+  const total = books.length;
+  return { books: books.slice(offset, offset + limit), pagination: { total, limit, offset, hasMore: offset + limit < total }, filters: { categories: ["Literature", "Science & Technology", "History", "Social Sciences & Society", "Arts & Culture", "Religion & Philosophy", "Lifestyle & Hobbies", "Health & Medicine"] } };
 }
 
-async function loadBooks() {
+async function loadBooks({ append = false } = {}) {
+  if (append && (state.loading || !state.pagination.hasMore)) return;
+  const requestId = ++state.requestId;
+  const offset = append ? state.books.length : 0;
   state.loading = true;
-  renderSkeletons();
-  const params = new URLSearchParams({ limit: "200", sort: state.filters.sort });
+  if (append) renderBooks();
+  else {
+    state.books = [];
+    state.pagination = { total: 0, hasMore: false };
+    elements.loadMoreWrap.hidden = true;
+    renderSkeletons();
+  }
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset), sort: state.filters.sort });
   if (state.filters.q) params.set("q", state.filters.q);
   if (state.filters.category) params.set("category", state.filters.category);
   if (state.filters.source) params.set("source", state.filters.source);
@@ -122,19 +141,30 @@ async function loadBooks() {
     try {
       result = await window.libraryApi.get(`/books?${params}`);
     } catch (apiError) {
-      result = await loadStaticCatalog();
+      result = await loadStaticCatalog({ limit: PAGE_SIZE, offset });
       console.warn("API unavailable; showing the read-only static catalog.", apiError);
     }
-    state.books = result.books;
+    if (requestId !== state.requestId) return;
+    state.books = append
+      ? [...state.books, ...result.books.filter((book) => !state.books.some((current) => current.id === book.id))]
+      : result.books;
+    state.pagination = {
+      total: result.pagination.total,
+      hasMore: result.pagination.hasMore ?? state.books.length < result.pagination.total,
+    };
     document.getElementById("catalog-total").textContent = result.pagination.total;
     renderCategories(result.filters.categories);
     renderBooks();
   } catch (error) {
+    if (requestId !== state.requestId) return;
     elements.grid.innerHTML = "";
     elements.empty.hidden = false;
     toast(error.message, "error");
   } finally {
-    state.loading = false;
+    if (requestId === state.requestId) {
+      state.loading = false;
+      renderBooks();
+    }
   }
 }
 
@@ -238,6 +268,7 @@ function wireEvents() {
   elements.source.addEventListener("change", () => { state.filters.source = elements.source.value; loadBooks(); });
   elements.sort.addEventListener("change", () => { state.filters.sort = elements.sort.value; loadBooks(); });
   elements.favoriteFilter.addEventListener("click", () => { if (!requireLogin()) return; state.filters.favoritesOnly = !state.filters.favoritesOnly; elements.favoriteFilter.classList.toggle("active", state.filters.favoritesOnly); renderBooks(); document.getElementById("collection").scrollIntoView(); });
+  elements.loadMoreButton.addEventListener("click", () => loadBooks({ append: true }));
   elements.grid.addEventListener("click", (event) => {
     const target = event.target.closest("[data-action]");
     if (!target) return;

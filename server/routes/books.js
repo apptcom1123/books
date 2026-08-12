@@ -33,7 +33,7 @@ router.get("/", async (req, res, next) => {
       category: req.query.category,
       source: req.query.source,
     });
-    const decorated = await req.app.locals.repositories.library.decorate(matches, req.user?.userId);
+    const decorated = await req.repositories.library.decorate(matches, req.user?.userId);
     const sorted = sortBooks(decorated, req.query.sort);
     res.json({
       books: sorted.slice(offset, offset + limit),
@@ -47,7 +47,7 @@ router.get("/", async (req, res, next) => {
 
 router.get("/:bookId", async (req, res, next) => {
   try {
-    const book = await req.app.locals.repositories.library.getBook(req.params.bookId, req.user?.userId);
+    const book = await req.repositories.library.getBook(req.params.bookId, req.user?.userId);
     res.json({ book });
   } catch (error) {
     next(error);
@@ -56,7 +56,7 @@ router.get("/:bookId", async (req, res, next) => {
 
 router.post("/:bookId/read", async (req, res, next) => {
   try {
-    const book = await req.app.locals.repositories.library.recordRead(req.params.bookId, {
+    const book = await req.repositories.library.recordRead(req.params.bookId, {
       userId: req.user?.userId,
       deviceId: req.body?.deviceId,
     });
@@ -72,7 +72,7 @@ router.put("/:bookId/rating", requireAuth, async (req, res, next) => {
     if (!Number.isInteger(rating) || rating < 0 || rating > 5) {
       return res.status(400).json({ error: "INVALID_RATING", message: "評分必須是 0 到 5 的整數。" });
     }
-    const book = await req.app.locals.repositories.library.setRating(req.params.bookId, req.user.userId, rating);
+    const book = await req.repositories.library.setRating(req.params.bookId, req.user.userId, rating);
     res.json({ success: true, metrics: book.metrics, viewer: book.viewer });
   } catch (error) {
     next(error);
@@ -81,7 +81,7 @@ router.put("/:bookId/rating", requireAuth, async (req, res, next) => {
 
 router.post("/:bookId/favorite", requireAuth, async (req, res, next) => {
   try {
-    const book = await req.app.locals.repositories.library.toggleFavorite(req.params.bookId, req.user.userId);
+    const book = await req.repositories.library.toggleFavorite(req.params.bookId, req.user.userId);
     res.json({ success: true, metrics: book.metrics, viewer: book.viewer });
   } catch (error) {
     next(error);
@@ -90,7 +90,7 @@ router.post("/:bookId/favorite", requireAuth, async (req, res, next) => {
 
 router.put("/:bookId/progress", requireAuth, async (req, res, next) => {
   try {
-    const progress = await req.app.locals.repositories.library.saveProgress(req.params.bookId, req.user.userId, req.body || {});
+    const progress = await req.repositories.library.saveProgress(req.params.bookId, req.user.userId, req.body || {});
     res.json({ success: true, progress });
   } catch (error) {
     next(error);

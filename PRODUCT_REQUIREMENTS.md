@@ -89,8 +89,9 @@
 ## 7. 安全與隱私
 
 - Google OAuth 採 Supabase Auth PKCE；前端只接觸 publishable key。
-- `SUPABASE_SERVICE_KEY` 只存在 Vercel Serverless 環境變數。
-- public schema 的新表全部啟用 RLS，且 anon／authenticated 不直接取得表權限；瀏覽器透過 API 操作。
+- Vercel runtime 只使用 Supabase Project URL 與 publishable key，不保存 secret/service-role key。
+- public schema 的新表全部啟用 RLS；Vercel API 將使用者 JWT 傳給 Supabase，資料庫以 `auth.uid()` 執行逐列授權。
+- 公開統計、公開使用者投影與匿名閱讀計數只透過欄位受限的 `security definer` RPC，不能讀取 reader key、其他投票者或使用者 email。
 - EPUB scripted content 保持關閉。使用者內容以文字節點或 HTML escaping 呈現。
 - JSON body 限制 64 KB，標注與留言限制 2,000 字。
 - 正式版應補充檢舉、封鎖、稽核紀錄、備份及資料刪除流程。
@@ -101,14 +102,14 @@
 - API：Vercel Serverless Function `api/index.js`，區域 `hkg1`。
 - 認證／資料：Supabase Auth + PostgreSQL。
 - 大型 EPUB 為 immutable static asset；部署後使用一年 cache header。更新檔案時應更換路徑或 hash。
-- 初始化順序：執行 YZ_json 使用者 schema → `library-schema.sql` → `npm run seed` → Vercel deploy。
+- 初始化順序：執行 YZ_json 使用者 schema → `library-schema.sql` → `npm run seed` 產生並執行 `library-seed.sql` → Vercel deploy。
 
 ## 9. 驗收條件
 
 - 建置輸出同時含 200 筆 catalog、200 個 EPUB、200 張封面與三個 vendor bundle。
 - Catalog ID、SHA-256、原始書名＋作者鍵均無重複。
 - 200 個 EPUB 都能以 ZIP 方式開啟且含 `mimetype`、`META-INF/container.xml`。
-- 未登入寫入 API 回傳 401；前端不包含 service role key。
+- 未登入的個人／社群寫入 API 回傳 401；前端與 Vercel runtime 均不包含 secret/service-role key。
 - 使用者重複收藏不會新增第二筆；重複開書只增加 `open_count`，不增加 reader count。
 - 閱讀器可顯示封面／圖片、目錄、分頁，並在重新整理後回到最後 CFI。
 - 公開與私人標注的讀取範圍符合規則。
@@ -117,7 +118,7 @@
 ## 10. 尚待人工／外部設定
 
 - 逐本權利複核不能由程式完全保證；公開發布前由負責人確認台灣及目標讀者所在地法律。
-- 在 Supabase SQL Editor 執行 migration 並執行 seed。
+- 在 Supabase SQL Editor 執行 migration 與產生出的 `library-seed.sql`。
 - 在 Supabase 啟用 Google provider，設定 Site URL／Redirect URLs。
 - 在 Vercel 設定三個 Supabase 環境變數及正式 `APP_ORIGIN`。
 - 上線後由推理社團進行可用性測試，再決定第二批類別與館藏。

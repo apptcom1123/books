@@ -39,9 +39,7 @@ export class LibraryRepository {
   async metrics(bookIds) {
     if (!bookIds.length) return new Map();
     const results = await Promise.all(batches(bookIds).map((ids) => this.db
-      .from("book_public_metrics")
-      .select("book_id,reader_count,rating_count,average_rating,favorite_count,annotation_count")
-      .in("book_id", ids)));
+      .rpc("get_book_public_metrics", { p_book_ids: ids })));
     for (const result of results) if (result.error) throw result.error;
     return new Map(results.flatMap((result) => result.data || []).map((row) => [row.book_id, {
       readerCount: number(row.reader_count),
@@ -107,7 +105,6 @@ export class LibraryRepository {
     const { error } = await this.db.rpc("record_book_open", {
       p_book_id: bookId,
       p_reader_key: readerKey,
-      p_user_id: userId,
     });
     if (error) throw error;
     return this.getBook(bookId, userId);
@@ -188,7 +185,7 @@ export class LibraryRepository {
     const ids = annotations.map((annotation) => annotation.id);
     if (!ids.length) return [];
     const [votesResult, repliesResult] = await Promise.all([
-      this.db.from("book_annotation_votes").select("annotation_id,user_id,vote_type").in("annotation_id", ids),
+      this.db.rpc("get_library_annotation_vote_stats", { p_annotation_ids: ids }),
       this.db.from("book_annotation_replies").select("*").in("annotation_id", ids).eq("status", "active").order("created_at", { ascending: true }),
     ]);
     if (votesResult.error) throw votesResult.error;
@@ -198,8 +195,7 @@ export class LibraryRepository {
       ...annotations.map((item) => item.author_id),
       ...replies.map((item) => item.author_id),
     ]);
-    const votesByAnnotation = new Map(ids.map((id) => [id, []]));
-    for (const vote of votesResult.data || []) votesByAnnotation.get(vote.annotation_id)?.push(vote);
+    const votesByAnnotation = byKey(votesResult.data || [], "annotation_id");
     const repliesByAnnotation = new Map(ids.map((id) => [id, []]));
     for (const reply of replies) {
       repliesByAnnotation.get(reply.annotation_id)?.push({
@@ -209,13 +205,13 @@ export class LibraryRepository {
       });
     }
     return annotations.map((annotation) => {
-      const votes = votesByAnnotation.get(annotation.id) || [];
+      const votes = votesByAnnotation.get(annotation.id) || { score: 0, viewer_vote: null };
       return {
         ...annotation,
         author: profiles.get(annotation.author_id) || { public_display_name: "讀者", role: "user" },
         isOwner: annotation.author_id === userId,
-        score: votes.reduce((sum, vote) => sum + (vote.vote_type === "up" ? 1 : -1), 0),
-        viewerVote: votes.find((vote) => vote.user_id === userId)?.vote_type || null,
+        score: number(votes.score),
+        viewerVote: votes.viewer_vote || null,
         replies: repliesByAnnotation.get(annotation.id) || [],
       };
     });
@@ -250,14 +246,7 @@ export class LibraryRepository {
     if (annotation.status !== "active" || (annotation.visibility !== "public" && annotation.author_id !== userId)) {
       throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
     }
-    const { data: existing, error: existingError } = await this.db
-      .from("book_annotation_votes")
-      .select("vote_type")
-      .eq("annotation_id", annotationId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (existingError) throw existingError;
-    const remove = voteType === "none" || existing?.vote_type === voteType;
+    const remove = voteType === "none";
     const operation = remove
       ? this.db.from("book_annotation_votes").delete().eq("annotation_id", annotationId).eq("user_id", userId)
       : this.db.from("book_annotation_votes").upsert({ annotation_id: annotationId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "annotation_id,user_id" });
@@ -282,7 +271,6 @@ export class LibraryRepository {
       id: crypto.randomUUID(),
       annotation_id: annotationId,
       author_id: userId,
-      parent_reply_id: input.parentReplyId || null,
       content,
     });
     if (error) throw error;

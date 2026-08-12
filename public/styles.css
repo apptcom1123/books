@@ -102,6 +102,10 @@ a { color: inherit; }
 .empty-state { text-align: center; padding: 90px 20px; }
 .empty-state span { font: 60px var(--serif); color: var(--rust); }
 .empty-state h3 { font: 700 27px var(--serif); margin: 10px 0 5px; }
+.load-more-wrap { display: flex; justify-content: center; padding-top: 48px; }
+.load-more-button { min-width: 180px; border: 1px solid var(--green); border-radius: 999px; padding: 12px 24px; color: var(--green); background: transparent; cursor: pointer; font-weight: 700; transition: color .18s ease, background .18s ease, opacity .18s ease; }
+.load-more-button:hover { color: #fff; background: var(--green); }
+.load-more-button:disabled { cursor: wait; opacity: .55; }
 
 .source-note { padding: 50px clamp(20px, 8vw, 128px); background: var(--green); color: #f3eadc; display: grid; grid-template-columns: 1fr 1fr 1.2fr; gap: 40px; align-items: center; }
 .source-note > div { display: grid; grid-template-columns: auto 1fr; column-gap: 13px; }

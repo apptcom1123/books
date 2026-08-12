@@ -9,7 +9,7 @@
     "build": "node scripts/build.js",
     "dev": "node server/index.js",
     "dev:with-build": "npm run build && node server/index.js",
-    "seed": "node scripts/seed-books.js",
+    "seed": "node scripts/generate-seed-sql.js",
     "test": "node --test"
   },
   "dependencies": {

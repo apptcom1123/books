@@ -6,9 +6,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { loadCatalog } from "./catalog.js";
-import { authMiddleware, attachProfile } from "./middleware/auth.js";
-import { UserRepository } from "./repositories/UserRepository.js";
-import { LibraryRepository } from "./repositories/LibraryRepository.js";
+import { authMiddleware, attachProfile, attachRepositories } from "./middleware/auth.js";
 import authRoutes from "./routes/auth.js";
 import booksRoutes from "./routes/books.js";
 import annotationsRoutes from "./routes/annotations.js";
@@ -16,9 +14,9 @@ import feedbackRoutes from "./routes/feedback.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-function singleEnv(name) {
-  const values = String(process.env[name] || "").trim().split(/\s+/).filter(Boolean);
-  if (new Set(values).size > 1) throw new Error(`${name} must contain exactly one value.`);
+function aliasedEnv(label, names) {
+  const values = names.flatMap((name) => String(process.env[name] || "").trim().split(/\s+/).filter(Boolean));
+  if (new Set(values).size > 1) throw new Error(`${label} aliases must resolve to exactly one value.`);
   return values[0] || "";
 }
 
@@ -29,11 +27,14 @@ function allowedOrigins() {
 }
 
 export async function createApp({ serveStatic = false } = {}) {
-  const supabaseUrl = singleEnv("SUPABASE_URL");
-  const publishableKey = singleEnv("SUPABASE_KEY");
-  const serviceKey = singleEnv("SUPABASE_SERVICE_KEY");
-  if (!supabaseUrl || !publishableKey || !serviceKey) {
-    throw new Error("SUPABASE_URL, SUPABASE_KEY, and SUPABASE_SERVICE_KEY are required.");
+  const supabaseUrl = aliasedEnv("Supabase URL", ["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]);
+  const publishableKey = aliasedEnv("Supabase publishable key", [
+    "SUPABASE_PUBLISHABLE_KEY",
+    "SUPABASE_KEY",
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+  ]);
+  if (!supabaseUrl || !publishableKey) {
+    throw new Error("A Supabase URL and publishable key are required.");
   }
 
   const app = express();
@@ -68,24 +69,22 @@ export async function createApp({ serveStatic = false } = {}) {
     }
   }
 
-  const serviceClient = createClient(supabaseUrl, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
-  });
   const authClient = createClient(supabaseUrl, publishableKey, {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   });
   const catalog = loadCatalog();
-  const userRepository = new UserRepository(serviceClient);
 
-  app.locals.supabaseClient = serviceClient;
+  app.locals.supabaseUrl = supabaseUrl;
+  app.locals.supabasePublishableKey = publishableKey;
   app.locals.supabaseAuthClient = authClient;
   app.locals.catalog = catalog;
-  app.locals.repositories = {
-    user: userRepository,
-    library: new LibraryRepository(serviceClient, catalog, userRepository),
-  };
+  app.locals.createDataClient = (accessToken = null) => createClient(supabaseUrl, publishableKey, {
+    auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+    global: accessToken ? { headers: { Authorization: `Bearer ${accessToken}` } } : undefined,
+  });
 
   app.use(authMiddleware);
+  app.use(attachRepositories);
   app.use(attachProfile);
   app.get("/api/health", (_req, res) => res.json({
     status: "ok",
