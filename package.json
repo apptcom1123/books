@@ -1,0 +1,29 @@
+{
+  "name": "mystery-commons-library",
+  "version": "1.0.0",
+  "private": true,
+  "description": "公版推理小說目錄、EPUB 閱讀器與社群標注平台",
+  "type": "module",
+  "scripts": {
+    "import:library": "node scripts/import-library.js",
+    "build": "node scripts/build.js",
+    "dev": "node server/index.js",
+    "dev:with-build": "npm run build && node server/index.js",
+    "seed": "node scripts/seed-books.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "epubjs": "^0.3.93",
+    "express": "^5.2.1",
+    "jszip": "^3.10.1"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.9.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

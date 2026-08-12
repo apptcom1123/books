@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3ecdf">
+  <meta name="description" content="謎讀公共圖書館：可搜尋、閱讀與共同標注的公版推理小說館藏。">
+  <title>謎讀・公共推理圖書館</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/vendor/supabase.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script src="/api.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="謎讀首頁">
+      <span class="brand-mark">謎</span>
+      <span><strong>謎讀</strong><small>Mystery Commons</small></span>
+    </a>
+    <nav class="top-nav" aria-label="主要導覽">
+      <a href="#collection">探索館藏</a>
+      <a href="#feedback">讀者回饋</a>
+      <button id="favorites-filter" class="nav-button" type="button">我的收藏</button>
+    </nav>
+    <div class="auth-area">
+      <button id="login-button" class="button button-dark" type="button">Google 登入</button>
+      <div id="user-menu" class="user-menu" hidden>
+        <button id="user-toggle" class="user-toggle" type="button" aria-expanded="false">
+          <img id="user-avatar" alt="" referrerpolicy="no-referrer">
+          <span id="user-name"></span>
+        </button>
+        <div id="user-dropdown" class="user-dropdown" hidden>
+          <span id="user-email"></span>
+          <button id="logout-button" type="button">登出</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">PUBLIC DOMAIN · DETECTIVE FICTION</p>
+        <h1>每一道線索，<br>都通往下一頁。</h1>
+        <p>兩座公共典藏，一間由讀者共同留下註記的推理圖書館。保留 EPUB 原始排版，讓經典案件在任何螢幕上重新展開。</p>
+        <form id="hero-search" class="hero-search" role="search">
+          <label class="sr-only" for="search-input">搜尋書名、作者或內容</label>
+          <span aria-hidden="true">⌕</span>
+          <input id="search-input" type="search" placeholder="搜尋書名、作者、偵探或關鍵字…" autocomplete="off">
+          <button type="submit">搜尋館藏</button>
+        </form>
+        <div class="hero-stats" aria-label="館藏摘要">
+          <span><strong id="catalog-total">200</strong> 本公版 EPUB</span>
+          <span><strong>2</strong> 個開放來源</span>
+          <span><strong>8</strong> 大分類架構</span>
+        </div>
+      </div>
+      <div class="hero-shelf" aria-hidden="true">
+        <div class="book-shape book-shape-one"><span>THE<br>MOONSTONE</span></div>
+        <div class="book-shape book-shape-two"><span>SHERLOCK<br>HOLMES</span></div>
+        <div class="book-shape book-shape-three"><span>THE<br>MALTESE<br>FALCON</span></div>
+        <div class="shelf-line"></div>
+      </div>
+    </section>
+
+    <section id="collection" class="collection-section">
+      <div class="section-heading">
+        <div><p class="eyebrow">THE COLLECTION</p><h2>探索館藏</h2></div>
+        <p id="result-summary" class="result-summary" aria-live="polite">正在整理書架…</p>
+      </div>
+      <div class="catalog-controls">
+        <div id="category-list" class="category-list" aria-label="書籍分類"></div>
+        <div class="select-row">
+          <label>來源<select id="source-select"><option value="">全部來源</option><option>Standard Ebooks</option><option>Project Gutenberg</option></select></label>
+          <label>排序<select id="sort-select"><option value="popular">熱門閱讀</option><option value="rating">讀者評分</option><option value="title">書名</option><option value="newest">版本日期</option></select></label>
+        </div>
+      </div>
+      <div id="active-filter" class="active-filter" hidden></div>
+      <div id="book-grid" class="book-grid" aria-live="polite"></div>
+      <div id="empty-state" class="empty-state" hidden><span>⌕</span><h3>書架上暫時沒有符合的作品</h3><p>試著換一個作者、書名或分類。</p></div>
+    </section>
+
+    <section class="source-note">
+      <div><span class="source-monogram">SE</span><h3>Standard Ebooks</h3><p>細緻校對、現代排版與完整 metadata 的公版版本。</p></div>
+      <div><span class="source-monogram">PG</span><h3>Project Gutenberg</h3><p>由志工維護、長期開放取用的經典電子書典藏。</p></div>
+      <p class="rights-copy">館藏會保存來源與權利檢查紀錄；公版判斷具有地域性，權利狀態有疑義的作品不得上架。</p>
+    </section>
+
+    <section id="feedback" class="feedback-section">
+      <div class="feedback-intro">
+        <p class="eyebrow">READERS' DESK</p>
+        <h2>讀者回饋桌</h2>
+        <p>缺書、排版問題、功能建議，或只是想談談剛讀完的謎題，都可以留在這裡。管理者與其他讀者能直接回覆。</p>
+        <button id="new-feedback-button" class="button button-accent" type="button">提出一則建議</button>
+      </div>
+      <div id="feedback-list" class="feedback-list"><p class="muted">正在取回留言…</p></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="brand brand-footer"><span class="brand-mark">謎</span><span><strong>謎讀</strong><small>開放閱讀，共同註記</small></span></div>
+    <p>電子書取自 Standard Ebooks 與 Project Gutenberg。網站的中文短介為檢索輔助，不取代原出版資訊。</p>
+    <a href="/about.html">館藏、權利與隱私說明</a>
+  </footer>
+
+  <dialog id="feedback-dialog" class="dialog">
+    <form id="feedback-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">READERS' DESK</p><h2 id="feedback-dialog-title">提出建議</h2></div><button class="icon-close" type="button" data-dialog-close="feedback-dialog" aria-label="關閉">×</button></div>
+      <input id="feedback-parent" type="hidden">
+      <label id="feedback-subject-wrap">主旨<input id="feedback-subject" maxlength="100" placeholder="例如：希望加入更多密室推理"></label>
+      <label>內容<textarea id="feedback-content" maxlength="2000" rows="6" required placeholder="請描述你的想法或遇到的問題…"></textarea></label>
+      <div class="dialog-actions"><button class="button button-quiet" type="button" data-dialog-close="feedback-dialog">取消</button><button id="feedback-submit" class="button button-dark" type="submit">送出</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</body>
+</html>

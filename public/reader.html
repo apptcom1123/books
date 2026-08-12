@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b211d">
+  <meta name="description" content="謎讀 EPUB 閱讀器">
+  <title>閱讀中・謎讀</title>
+  <link rel="stylesheet" href="/reader.css">
+  <script src="/vendor/jszip.min.js" defer></script>
+  <script src="/vendor/epub.min.js" defer></script>
+  <script src="/vendor/supabase.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script src="/api.js" defer></script>
+  <script src="/reader.js" defer></script>
+</head>
+<body class="reader-shell">
+  <header class="reader-header">
+    <a class="back-link" href="/" aria-label="回到書庫">← <span>書庫</span></a>
+    <button id="toc-toggle" class="reader-icon" type="button" aria-label="開啟目錄">☰</button>
+    <div class="reader-title"><strong id="book-title">正在取書…</strong><small id="book-author"></small></div>
+    <div class="progress-head"><span id="progress-label">—</span><div><i id="progress-bar"></i></div></div>
+    <button id="annotation-toggle" class="reader-icon annotation-toggle" type="button" aria-label="開啟共同標注">✦ <span id="annotation-count">0</span></button>
+    <button id="settings-toggle" class="reader-icon" type="button" aria-label="閱讀設定">Aa</button>
+    <button id="reader-login" class="reader-login" type="button">登入</button>
+  </header>
+
+  <aside id="toc-panel" class="reader-panel toc-panel" hidden>
+    <div class="panel-head"><div><small>CONTENTS</small><strong>本書目錄</strong></div><button data-close-panel="toc-panel" aria-label="關閉">×</button></div>
+    <nav id="toc-list" class="toc-list"></nav>
+  </aside>
+
+  <main class="reader-main">
+    <button id="previous-page" class="page-turn previous" type="button" aria-label="上一頁">‹</button>
+    <div id="epub-viewer" class="epub-viewer"><div class="reader-loading"><span class="loading-mark">謎</span><p>正在拆封電子書…</p></div></div>
+    <button id="next-page" class="page-turn next" type="button" aria-label="下一頁">›</button>
+  </main>
+
+  <aside id="annotation-panel" class="reader-panel annotation-panel" hidden>
+    <div class="panel-head"><div><small>COMMUNITY NOTES</small><strong>共同標注</strong></div><button data-close-panel="annotation-panel" aria-label="關閉">×</button></div>
+    <p class="panel-hint">選取書中文字即可新增標注。私人標注只有你看得到，公開標注則可由所有讀者回覆與投票。</p>
+    <div class="annotation-filter"><button class="active" data-note-filter="all">全部</button><button data-note-filter="chapter">本章</button></div>
+    <div id="annotation-list" class="annotation-list"><p class="muted">尚未載入標注。</p></div>
+  </aside>
+
+  <section id="settings-panel" class="settings-popover" hidden>
+    <div><span>字級</span><button id="font-smaller" type="button">A−</button><button id="font-larger" type="button">A＋</button></div>
+    <label>主題<select id="theme-select"><option value="publisher">原書排版</option><option value="paper">紙張舒適</option><option value="night">夜間閱讀</option></select></label>
+    <label>跨頁<select id="spread-select"><option value="auto">自動</option><option value="none">單頁</option></select></label>
+  </section>
+
+  <footer class="reader-footer">
+    <button id="footer-prev" type="button">← 上一頁</button>
+    <span id="chapter-label">準備中</span>
+    <button id="footer-next" type="button">下一頁 →</button>
+  </footer>
+
+  <dialog id="annotation-dialog" class="annotation-dialog">
+    <form id="annotation-form" method="dialog">
+      <div class="dialog-head"><div><small>NEW ANNOTATION</small><h2>留下標注</h2></div><button type="button" data-dialog-close="annotation-dialog" aria-label="關閉">×</button></div>
+      <blockquote id="selected-quote"></blockquote>
+      <label>你的想法<textarea id="annotation-content" rows="5" maxlength="2000" required placeholder="寫下線索、推論、疑問或閱讀感受…"></textarea></label>
+      <label class="visibility-label"><input id="annotation-public" type="checkbox" checked><span>公開給所有讀者</span></label>
+      <div class="dialog-actions"><button class="quiet" type="button" data-dialog-close="annotation-dialog">取消</button><button id="annotation-submit" class="primary" type="submit">儲存標注</button></div>
+    </form>
+  </dialog>
+
+  <div id="reader-toast" class="reader-toast" aria-live="polite"></div>
+</body>
+</html>

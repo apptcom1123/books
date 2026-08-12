@@ -1,0 +1,100 @@
+import express from "express";
+import { CATEGORY_OPTIONS, queryCatalog } from "../catalog.js";
+import { requireAuth } from "../middleware/auth.js";
+
+const router = express.Router();
+
+function boundedInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+}
+
+function sortBooks(books, sort) {
+  const collator = new Intl.Collator("zh-Hant", { numeric: true, sensitivity: "base" });
+  const sorted = [...books];
+  if (sort === "rating") {
+    sorted.sort((a, b) => b.metrics.averageRating - a.metrics.averageRating || b.metrics.ratingCount - a.metrics.ratingCount);
+  } else if (sort === "title") {
+    sorted.sort((a, b) => collator.compare(a.title_zh, b.title_zh));
+  } else if (sort === "newest") {
+    sorted.sort((a, b) => String(b.edition_release_date).localeCompare(String(a.edition_release_date)));
+  } else {
+    sorted.sort((a, b) => b.metrics.readerCount - a.metrics.readerCount || b.metrics.favoriteCount - a.metrics.favoriteCount || a.catalog_order - b.catalog_order);
+  }
+  return sorted;
+}
+
+router.get("/", async (req, res, next) => {
+  try {
+    const limit = boundedInteger(req.query.limit, 48, 1, 200);
+    const offset = boundedInteger(req.query.offset, 0, 0, 10_000);
+    const matches = queryCatalog(req.app.locals.catalog, {
+      query: req.query.q,
+      category: req.query.category,
+      source: req.query.source,
+    });
+    const decorated = await req.app.locals.repositories.library.decorate(matches, req.user?.userId);
+    const sorted = sortBooks(decorated, req.query.sort);
+    res.json({
+      books: sorted.slice(offset, offset + limit),
+      pagination: { total: sorted.length, limit, offset, hasMore: offset + limit < sorted.length },
+      filters: { categories: CATEGORY_OPTIONS, sources: ["Standard Ebooks", "Project Gutenberg"] },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/:bookId", async (req, res, next) => {
+  try {
+    const book = await req.app.locals.repositories.library.getBook(req.params.bookId, req.user?.userId);
+    res.json({ book });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:bookId/read", async (req, res, next) => {
+  try {
+    const book = await req.app.locals.repositories.library.recordRead(req.params.bookId, {
+      userId: req.user?.userId,
+      deviceId: req.body?.deviceId,
+    });
+    res.json({ success: true, metrics: book.metrics });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/:bookId/rating", requireAuth, async (req, res, next) => {
+  try {
+    const rating = Number(req.body?.rating);
+    if (!Number.isInteger(rating) || rating < 0 || rating > 5) {
+      return res.status(400).json({ error: "INVALID_RATING", message: "評分必須是 0 到 5 的整數。" });
+    }
+    const book = await req.app.locals.repositories.library.setRating(req.params.bookId, req.user.userId, rating);
+    res.json({ success: true, metrics: book.metrics, viewer: book.viewer });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:bookId/favorite", requireAuth, async (req, res, next) => {
+  try {
+    const book = await req.app.locals.repositories.library.toggleFavorite(req.params.bookId, req.user.userId);
+    res.json({ success: true, metrics: book.metrics, viewer: book.viewer });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/:bookId/progress", requireAuth, async (req, res, next) => {
+  try {
+    const progress = await req.app.locals.repositories.library.saveProgress(req.params.bookId, req.user.userId, req.body || {});
+    res.json({ success: true, progress });
+  } catch (error) {
+    next(error);
+  }
+});
+
+export default router;

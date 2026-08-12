@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-08-12T04:56:11.505Z",
+  "total_records": 200,
+  "csv_records": 200,
+  "sqlite_records": 200,
+  "sqlite_incomplete_records": 0,
+  "source_counts": {
+    "Standard Ebooks": 88,
+    "Project Gutenberg": 112
+  },
+  "unique_work_keys": 200,
+  "unique_file_hashes": 200,
+  "total_epub_bytes": 113565834,
+  "covers_downloaded": 200,
+  "description_methods": {
+    "machine-translated source abstract": 88,
+    "metadata-based Chinese summary": 112
+  },
+  "issues": [],
+  "status": "PASSED"
+}
