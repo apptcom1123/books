@@ -1,6 +1,6 @@
 # 謎讀・公共推理圖書館
 
-一個獨立於 `YZ_json` 占卜功能的新專案。它沿用 Supabase Google OAuth 與使用者表，重新實作書籍搜尋、EPUB 閱讀、評分、收藏、進度、共同標注、投票、回覆與讀者留言板。
+一個獨立於 `YZ_json` 占卜功能的新專案。它沿用 Supabase Google OAuth 的登入方式，重新實作書籍搜尋、EPUB 閱讀、評分、收藏、進度、共同標注、投票、回覆、書評、站內通知與個人書房。
 
 完整需求見 [PRODUCT_REQUIREMENTS.md](./PRODUCT_REQUIREMENTS.md)。
 
@@ -18,12 +18,12 @@ npm run dev
 
 ## Supabase 初始化
 
-1. 若仍使用 `YZ_json` 的 Supabase project，保留既有 `public.users`。
-2. 在 SQL Editor 執行 `server/db/library-schema.sql`。
-3. 執行 `npm run seed` 產生 `server/db/library-seed.sql`，再於 SQL Editor 執行該檔案。
+1. 在 SQL Editor 的一個新查詢中完整執行 `server/db/library-schema.sql`，並確認顯示成功。全新 project 會建立最小的 `public.users`；若沿用 `YZ_json`，則保留既有資料表並補上圖書館功能。schema 使用 transaction，任何一行失敗都會整批回滾，這時不要繼續執行 seed。
+2. 可先執行 `select to_regclass('public.library_books');`；結果必須是 `public.library_books`。
+3. 執行 `npm run seed` 產生 `server/db/library-seed.sql`，再於另一個 SQL Editor 查詢中完整執行該檔案。
 4. 在 `.env` 設定 Supabase URL 與 publishable key；網站 runtime 不使用 secret/service-role key。
 5. Authentication → Providers 啟用 Google。
-6. URL Configuration 加入：
+6. Authentication → URL Configuration 將正式網域設成 Site URL，Redirect URLs 同時加入本機與正式網域：
 
 ```text
 http://localhost:3001/
@@ -31,6 +31,34 @@ https://你的網域.vercel.app/
 ```
 
 Google Cloud 的 Authorized redirect URI 使用 Supabase 顯示的 `/auth/v1/callback`，不是本站 API。
+
+執行 SQL 後可以先確認資料表是否齊全：
+
+```powershell
+npm run verify:supabase
+```
+
+若顯示 `PGRST205`，代表該 Supabase project 尚未執行 schema；首頁仍可能用靜態館藏正常顯示，但登入後的收藏、評論與標注不會工作。
+
+## 個人書房與通知
+
+登入後從右上角或「我的書房」進入 `/account.html`，可管理收藏、閱讀進度、評分、書評、自己的標注與回覆、收藏的公開標注，以及通知偏好。公開標注被收藏／按讚、標注收到回覆、書評被按讚、留言收到回覆時會產生站內通知；自己的互動不會通知自己。
+
+書籍本身來自公共館藏，沒有「書籍擁有者」，所以別人收藏一本書不會通知任何人；「被別人收藏」在本站對應的是讀者公開標注被其他讀者收藏。
+
+## 即時同步與健康檢查
+
+本站不在 Vercel Function 內另開常駐 WebSocket Server，而是共用瀏覽器中的單一 Supabase Realtime 連線。資料庫只廣播很小的 Delta（資源類型、操作、目標 ID、書籍 ID、序列號、時間），收到後再由既有 REST API 讀取經 RLS 授權的完整內容。
+
+- `user:{userId}:notifications` 是登入者自己的私有通知 Topic。
+- `book:{bookId}:activity` 只傳公開評論／標注的 ID，並只在首頁評論視窗或閱讀器共同標注側欄開啟時訂閱，關閉立即退訂。
+- 頁面進入背景 15 秒後移除 Channel；回到前景、恢復網路或重連成功時，以 `sequence_id` 從 `/api/realtime/events` 補拿遺漏事件。
+- SDK 每 30 秒執行心跳，斷線使用含 jitter 的 1、2、5、10、30 秒退避。Channel 未恢復時，每 45 秒使用 HTTP 補漏；畫面仍保留最後一次成功取得的資料。
+- 個人書房的通知頁顯示連線狀態與心跳延遲；開發者也可在瀏覽器 Console 執行 `libraryRealtime.diagnostics()` 查看最近 50 筆狀態日誌、重連、錯誤、事件延遲與訂閱 Topic。
+
+WebSocket 由 HTTPS Supabase URL 自動使用 `wss://`。個人通知 Channel 是 private，JWT 在 join 與 token refresh 時由 SDK 更新，接收權限由 `realtime.messages` RLS 決定；公開書籍 Room 則不含私人標注或完整資料。連線數、訊息量、Lag、錯誤率與節點資源請在 Supabase Dashboard 的 Realtime Reports 監看，因為 Socket 並不終止於本站 Express/Vercel 節點。
+
+目前沒有額外套用 `permessage-deflate`、MessagePack 或 Protocol Buffers：傳輸內容已是小型 Delta，而 Supabase 託管傳輸不提供本站逐連線調整壓縮的介面。若日後改為自架大量二進位串流，再評估二進位協定、每 IP 連線上限與 Redis Pub/Sub；目前水平分發、連線上限及惡意 Socket 防護由 Supabase Realtime 層負責。
 
 ## Vercel 環境變數
 
@@ -53,7 +81,19 @@ NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
 ```powershell
 npm test
 npm run build
+npm run verify:supabase
 node --check server/app.js
 node --check public/app.js
 node --check public/reader.js
+node --check public/realtime.js
 ```
+
+完成一次 Google 登入並取得短效 access token 後，可以對本機 API 執行登入後煙霧測試。它會測試並還原通知設定、收藏和評分，另建立後刪除暫時書評、按讚、標注、投票與回覆：
+
+```powershell
+$env:SUPABASE_TEST_ACCESS_TOKEN='短效 access token'
+npm run test:authenticated
+Remove-Item Env:SUPABASE_TEST_ACCESS_TOKEN
+```
+
+access token 不要寫入 `.env`、不要提交。跨使用者通知仍需以第二個測試帳號人工操作一次。

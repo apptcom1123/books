@@ -24,6 +24,8 @@ class LibraryApi {
   get(endpoint) { return this.request("GET", endpoint); }
   post(endpoint, body = {}) { return this.request("POST", endpoint, body); }
   put(endpoint, body = {}) { return this.request("PUT", endpoint, body); }
+  patch(endpoint, body = {}) { return this.request("PATCH", endpoint, body); }
+  delete(endpoint) { return this.request("DELETE", endpoint); }
 }
 
 window.libraryApi = new LibraryApi();

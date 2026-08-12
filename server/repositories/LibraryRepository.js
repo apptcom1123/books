@@ -47,6 +47,7 @@ export class LibraryRepository {
       averageRating: number(row.average_rating),
       favoriteCount: number(row.favorite_count),
       annotationCount: number(row.annotation_count),
+      reviewCount: number(row.review_count),
     }]));
   }
 
@@ -82,6 +83,7 @@ export class LibraryRepository {
         averageRating: 0,
         favoriteCount: 0,
         annotationCount: 0,
+        reviewCount: 0,
       },
       viewer: viewer.get(book.id) || { rating: 0, isFavorite: false, progress: null },
     }));
@@ -184,11 +186,13 @@ export class LibraryRepository {
   async hydrateAnnotations(annotations, userId) {
     const ids = annotations.map((annotation) => annotation.id);
     if (!ids.length) return [];
-    const [votesResult, repliesResult] = await Promise.all([
+    const [votesResult, favoritesResult, repliesResult] = await Promise.all([
       this.db.rpc("get_library_annotation_vote_stats", { p_annotation_ids: ids }),
+      this.db.rpc("get_library_annotation_favorite_stats", { p_annotation_ids: ids }),
       this.db.from("book_annotation_replies").select("*").in("annotation_id", ids).eq("status", "active").order("created_at", { ascending: true }),
     ]);
     if (votesResult.error) throw votesResult.error;
+    if (favoritesResult.error) throw favoritesResult.error;
     if (repliesResult.error) throw repliesResult.error;
     const replies = repliesResult.data || [];
     const profiles = await this.userRepository.publicProfiles([
@@ -196,6 +200,7 @@ export class LibraryRepository {
       ...replies.map((item) => item.author_id),
     ]);
     const votesByAnnotation = byKey(votesResult.data || [], "annotation_id");
+    const favoritesByAnnotation = byKey(favoritesResult.data || [], "annotation_id");
     const repliesByAnnotation = new Map(ids.map((id) => [id, []]));
     for (const reply of replies) {
       repliesByAnnotation.get(reply.annotation_id)?.push({
@@ -206,12 +211,15 @@ export class LibraryRepository {
     }
     return annotations.map((annotation) => {
       const votes = votesByAnnotation.get(annotation.id) || { score: 0, viewer_vote: null };
+      const favorites = favoritesByAnnotation.get(annotation.id) || { favorite_count: 0, viewer_favorite: false };
       return {
         ...annotation,
         author: profiles.get(annotation.author_id) || { public_display_name: "讀者", role: "user" },
         isOwner: annotation.author_id === userId,
         score: number(votes.score),
         viewerVote: votes.viewer_vote || null,
+        favoriteCount: number(favorites.favorite_count),
+        viewerFavorite: Boolean(favorites.viewer_favorite),
         replies: repliesByAnnotation.get(annotation.id) || [],
       };
     });
@@ -255,6 +263,55 @@ export class LibraryRepository {
     return (await this.listAnnotations(annotation.book_id, userId)).find((item) => item.id === annotationId);
   }
 
+  async toggleAnnotationFavorite(annotationId, userId) {
+    const { data: annotation, error: annotationError } = await this.db
+      .from("book_annotations")
+      .select("id,book_id,visibility,status")
+      .eq("id", annotationId)
+      .single();
+    if (annotationError || !annotation || annotation.status !== "active" || annotation.visibility !== "public") {
+      throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
+    }
+    const { data: existing, error: findError } = await this.db
+      .from("book_annotation_favorites")
+      .select("annotation_id")
+      .eq("annotation_id", annotationId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (findError) throw findError;
+    const operation = existing
+      ? this.db.from("book_annotation_favorites").delete().eq("annotation_id", annotationId).eq("user_id", userId)
+      : this.db.from("book_annotation_favorites").insert({ annotation_id: annotationId, user_id: userId });
+    const { error } = await operation;
+    if (error) throw error;
+    return (await this.listAnnotations(annotation.book_id, userId)).find((item) => item.id === annotationId);
+  }
+
+  async updateAnnotation(annotationId, userId, input) {
+    const content = cleanText(input.content, 2000);
+    if (!content) throw Object.assign(new Error("INVALID_ANNOTATION"), { status: 400 });
+    const payload = {
+      content,
+      visibility: input.visibility === "private" ? "private" : "public",
+      updated_at: new Date().toISOString(),
+    };
+    const { data, error } = await this.db.from("book_annotations")
+      .update(payload).eq("id", annotationId).eq("author_id", userId).eq("status", "active")
+      .select("*").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
+    return (await this.hydrateAnnotations([data], userId))[0];
+  }
+
+  async deleteAnnotation(annotationId, userId) {
+    const { data, error } = await this.db.from("book_annotations")
+      .update({ status: "deleted", updated_at: new Date().toISOString() })
+      .eq("id", annotationId).eq("author_id", userId).eq("status", "active")
+      .select("id").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
+  }
+
   async replyToAnnotation(annotationId, userId, input) {
     const content = cleanText(input.content, 2000);
     if (!content) throw Object.assign(new Error("INVALID_REPLY"), { status: 400 });
@@ -275,6 +332,147 @@ export class LibraryRepository {
     });
     if (error) throw error;
     return (await this.listAnnotations(annotation.book_id, userId)).find((item) => item.id === annotationId);
+  }
+
+  async deleteAnnotationReply(replyId, userId) {
+    const { data, error } = await this.db.from("book_annotation_replies")
+      .update({ status: "deleted", updated_at: new Date().toISOString() })
+      .eq("id", replyId).eq("author_id", userId).eq("status", "active")
+      .select("id").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("REPLY_NOT_FOUND"), { status: 404 });
+  }
+
+  async hydrateReviews(reviews, userId) {
+    const ids = reviews.map((review) => review.id);
+    if (!ids.length) return [];
+    const [profiles, likesResult] = await Promise.all([
+      this.userRepository.publicProfiles(reviews.map((review) => review.author_id)),
+      this.db.rpc("get_library_review_like_stats", { p_review_ids: ids }),
+    ]);
+    if (likesResult.error) throw likesResult.error;
+    const likes = byKey(likesResult.data || [], "review_id");
+    return reviews.map((review) => {
+      const interaction = likes.get(review.id) || { like_count: 0, viewer_liked: false };
+      return {
+        ...review,
+        author: profiles.get(review.author_id) || { public_display_name: "讀者", role: "user" },
+        isOwner: review.author_id === userId,
+        likeCount: number(interaction.like_count),
+        viewerLiked: Boolean(interaction.viewer_liked),
+      };
+    });
+  }
+
+  async listReviews(bookId, userId = null) {
+    this.requireBook(bookId);
+    const { data, error } = await this.db.from("book_reviews").select("*")
+      .eq("book_id", bookId).eq("status", "active").order("created_at", { ascending: false }).limit(200);
+    if (error) throw error;
+    return this.hydrateReviews(data || [], userId);
+  }
+
+  async saveReview(bookId, userId, input) {
+    this.requireBook(bookId);
+    const content = cleanText(input.content, 4000);
+    if (!content) throw Object.assign(new Error("INVALID_REVIEW"), { status: 400 });
+    const { data: existing, error: findError } = await this.db.from("book_reviews")
+      .select("id").eq("book_id", bookId).eq("author_id", userId).maybeSingle();
+    if (findError) throw findError;
+    let result;
+    if (existing) {
+      result = await this.db.from("book_reviews").update({ content, status: "active", updated_at: new Date().toISOString() })
+        .eq("id", existing.id).eq("author_id", userId).select("*").single();
+    } else {
+      result = await this.db.from("book_reviews").insert({ id: crypto.randomUUID(), book_id: bookId, author_id: userId, content })
+        .select("*").single();
+    }
+    if (result.error) throw result.error;
+    return (await this.hydrateReviews([result.data], userId))[0];
+  }
+
+  async deleteReview(reviewId, userId) {
+    const { data, error } = await this.db.from("book_reviews")
+      .update({ status: "deleted", updated_at: new Date().toISOString() })
+      .eq("id", reviewId).eq("author_id", userId).eq("status", "active")
+      .select("id").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("REVIEW_NOT_FOUND"), { status: 404 });
+  }
+
+  async toggleReviewLike(reviewId, userId) {
+    const { data: review, error: reviewError } = await this.db.from("book_reviews")
+      .select("*").eq("id", reviewId).eq("status", "active").single();
+    if (reviewError) throw reviewError;
+    const { data: existing, error: findError } = await this.db.from("book_review_likes")
+      .select("review_id").eq("review_id", reviewId).eq("user_id", userId).maybeSingle();
+    if (findError) throw findError;
+    const operation = existing
+      ? this.db.from("book_review_likes").delete().eq("review_id", reviewId).eq("user_id", userId)
+      : this.db.from("book_review_likes").insert({ review_id: reviewId, user_id: userId });
+    const { error } = await operation;
+    if (error) throw error;
+    return (await this.hydrateReviews([review], userId))[0];
+  }
+
+  async userDashboard(userId) {
+    const [favoritesResult, ratingsResult, progressResult, reviewsResult, annotationsResult, repliesResult, savedResult] = await Promise.all([
+      this.db.from("book_favorites").select("book_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }),
+      this.db.from("book_ratings").select("book_id,rating,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }),
+      this.db.from("book_progress").select("book_id,cfi,chapter_href,percentage,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }),
+      this.db.from("book_reviews").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
+      this.db.from("book_annotations").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
+      this.db.from("book_annotation_replies").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
+      this.db.from("book_annotation_favorites").select("annotation_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }),
+    ]);
+    for (const result of [favoritesResult, ratingsResult, progressResult, reviewsResult, annotationsResult, repliesResult, savedResult]) {
+      if (result.error) throw result.error;
+    }
+    const savedIds = (savedResult.data || []).map((row) => row.annotation_id);
+    const replyAnnotationIds = (repliesResult.data || []).map((row) => row.annotation_id);
+    const relatedIds = [...new Set([...savedIds, ...replyAnnotationIds])];
+    let relatedAnnotations = [];
+    if (relatedIds.length) {
+      const { data, error } = await this.db.from("book_annotations").select("*").in("id", relatedIds).eq("status", "active");
+      if (error) throw error;
+      relatedAnnotations = data || [];
+    }
+    const bookIds = [...new Set([
+      ...(favoritesResult.data || []).map((row) => row.book_id),
+      ...(ratingsResult.data || []).map((row) => row.book_id),
+      ...(progressResult.data || []).map((row) => row.book_id),
+      ...(reviewsResult.data || []).map((row) => row.book_id),
+      ...(annotationsResult.data || []).map((row) => row.book_id),
+      ...relatedAnnotations.map((row) => row.book_id),
+    ])].filter((id) => this.catalog.byId.has(id));
+    const decoratedBooks = bookIds.length
+      ? await this.decorate(bookIds.map((id) => this.catalog.byId.get(id)), userId)
+      : [];
+    const books = new Map(decoratedBooks.map((book) => [book.id, book]));
+    const ownReviews = await this.hydrateReviews(reviewsResult.data || [], userId);
+    const ownAnnotations = await this.hydrateAnnotations(annotationsResult.data || [], userId);
+    const relatedById = new Map(relatedAnnotations.map((annotation) => [annotation.id, annotation]));
+    const savedAnnotations = savedIds.length
+      ? await this.hydrateAnnotations(savedIds.map((id) => relatedById.get(id)).filter(Boolean), userId)
+      : [];
+    return {
+      stats: {
+        favorites: favoritesResult.data?.length || 0,
+        reading: progressResult.data?.length || 0,
+        reviews: ownReviews.length,
+        annotations: ownAnnotations.length,
+      },
+      favorites: (favoritesResult.data || []).map((row) => ({ ...row, book: books.get(row.book_id) })).filter((row) => row.book),
+      reading: (progressResult.data || []).map((row) => ({ ...row, book: books.get(row.book_id) })).filter((row) => row.book),
+      ratings: (ratingsResult.data || []).map((row) => ({ ...row, book: books.get(row.book_id) })).filter((row) => row.book),
+      reviews: ownReviews.map((review) => ({ ...review, book: books.get(review.book_id) })).filter((review) => review.book),
+      annotations: ownAnnotations.map((annotation) => ({ ...annotation, book: books.get(annotation.book_id) })).filter((annotation) => annotation.book),
+      replies: (repliesResult.data || []).map((reply) => {
+        const annotation = relatedById.get(reply.annotation_id);
+        return { ...reply, annotation, book: annotation ? books.get(annotation.book_id) : null };
+      }).filter((reply) => reply.book),
+      savedAnnotations: savedAnnotations.map((annotation) => ({ ...annotation, book: books.get(annotation.book_id) })).filter((annotation) => annotation.book),
+    };
   }
 
   async listFeedback(userId = null) {

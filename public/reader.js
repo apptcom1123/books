@@ -1,5 +1,6 @@
 const params = new URLSearchParams(location.search);
 const bookId = params.get("id");
+const requestedNoteId = params.get("note");
 const readerState = {
   bookRecord: null,
   epub: null,
@@ -15,6 +16,9 @@ const readerState = {
   fontSize: 100,
   saveTimer: null,
   turning: false,
+  requestedNoteHandled: false,
+  annotationRealtimeStop: null,
+  annotationRefreshTimer: null,
 };
 
 function escapeHtml(value = "") {
@@ -275,6 +279,13 @@ async function loadAnnotations() {
     document.getElementById("annotation-count").textContent = result.annotations.filter((note) => note.visibility === "public").length;
     renderHighlights();
     renderAnnotations();
+    const requested = !readerState.requestedNoteHandled && requestedNoteId && readerState.annotations.find((note) => note.id === requestedNoteId);
+    if (requested) {
+      readerState.requestedNoteHandled = true;
+      openAnnotationPanel();
+      try { await readerState.rendition.display(requested.cfi_range); } catch {}
+      setTimeout(() => document.querySelector(`[data-annotation-id="${requested.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    }
   } catch (error) {
     document.getElementById("annotation-list").innerHTML = `<p class="muted">${escapeHtml(error.message)}</p>`;
   }
@@ -313,7 +324,7 @@ function renderAnnotations() {
     <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleDateString("zh-TW")}</time></div>
     ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
     <p>${escapeHtml(note.content)}</p>
-    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}">▲</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}">▼</button><span>${note.score >= 0 ? "+" : ""}${note.score}</span><span>· ${note.visibility === "private" ? "私人" : `${note.replies.length} 則回覆`}</span></div>
+    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞標注">▲</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不贊同標注">▼</button><span>${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}">${note.viewerFavorite ? "♥" : "♡"} ${note.favoriteCount}</button>` : ""}<span>· ${note.visibility === "private" ? "私人" : `${note.replies.length} 則回覆`}</span></div>
     ${note.visibility === "public" ? `<div class="annotation-replies">${note.replies.map((reply) => `<div class="annotation-reply"><strong>${escapeHtml(reply.author.public_display_name || "讀者")}${["admin", "moderator"].includes(reply.author.role) ? "・館員" : ""}</strong>${escapeHtml(reply.content)}</div>`).join("")}</div><form class="reply-form" data-reply-form="${note.id}"><input maxlength="2000" aria-label="回覆標注" placeholder="回覆這則標注…"><button type="submit">送出</button></form>` : ""}
   </article>`).join("");
 }
@@ -321,6 +332,21 @@ function renderAnnotations() {
 function openAnnotationPanel() {
   document.getElementById("annotation-panel").hidden = false;
   document.getElementById("toc-panel").hidden = true;
+  syncAnnotationRealtime(true);
+}
+
+function syncAnnotationRealtime(active) {
+  if (!active) {
+    readerState.annotationRealtimeStop?.();
+    readerState.annotationRealtimeStop = null;
+    return;
+  }
+  if (readerState.annotationRealtimeStop || !bookId || !window.libraryRealtime) return;
+  readerState.annotationRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
+    if (events.length && !events.some((event) => event.resource.startsWith("annotation"))) return;
+    clearTimeout(readerState.annotationRefreshTimer);
+    readerState.annotationRefreshTimer = setTimeout(() => loadAnnotations(), 280);
+  });
 }
 
 async function submitAnnotation(event) {
@@ -351,6 +377,14 @@ async function voteAnnotation(id, voteType) {
   } catch (error) { toast(error.message, "error"); }
 }
 
+async function favoriteAnnotation(id) {
+  if (!ensureLogin()) return;
+  try {
+    await window.libraryApi.post(`/annotations/${id}/favorite`);
+    await loadAnnotations();
+  } catch (error) { toast(error.message, "error"); }
+}
+
 async function replyAnnotation(id, content) {
   if (!ensureLogin()) return;
   try {
@@ -372,9 +406,9 @@ function wireControls() {
   for (const id of ["previous-page", "footer-prev"]) document.getElementById(id).addEventListener("click", previous);
   for (const id of ["next-page", "footer-next"]) document.getElementById(id).addEventListener("click", next);
   document.addEventListener("keydown", handlePageKey);
-  document.getElementById("toc-toggle").addEventListener("click", () => { const panel = document.getElementById("toc-panel"); panel.hidden = !panel.hidden; document.getElementById("annotation-panel").hidden = true; });
-  document.getElementById("annotation-toggle").addEventListener("click", () => { const panel = document.getElementById("annotation-panel"); panel.hidden = !panel.hidden; document.getElementById("toc-panel").hidden = true; });
-  document.querySelectorAll("[data-close-panel]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.closePanel).hidden = true; }));
+  document.getElementById("toc-toggle").addEventListener("click", () => { const panel = document.getElementById("toc-panel"); panel.hidden = !panel.hidden; document.getElementById("annotation-panel").hidden = true; syncAnnotationRealtime(false); });
+  document.getElementById("annotation-toggle").addEventListener("click", () => { const panel = document.getElementById("annotation-panel"); panel.hidden = !panel.hidden; document.getElementById("toc-panel").hidden = true; syncAnnotationRealtime(!panel.hidden); });
+  document.querySelectorAll("[data-close-panel]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.closePanel).hidden = true; if (button.dataset.closePanel === "annotation-panel") syncAnnotationRealtime(false); }));
   document.getElementById("settings-toggle").addEventListener("click", () => { const panel = document.getElementById("settings-panel"); panel.hidden = !panel.hidden; });
   document.getElementById("toc-list").addEventListener("click", (event) => { const button = event.target.closest("[data-toc-href]"); if (!button) return; readerState.rendition.display(button.dataset.tocHref); document.getElementById("toc-panel").hidden = true; });
   document.getElementById("font-smaller").addEventListener("click", () => { readerState.fontSize = Math.max(80, readerState.fontSize - 10); readerState.rendition.themes.fontSize(`${readerState.fontSize}%`); localStorage.setItem("mystery-library:font-size", readerState.fontSize); });
@@ -387,12 +421,14 @@ function wireControls() {
   document.getElementById("annotation-list").addEventListener("click", (event) => {
     const vote = event.target.closest("[data-note-vote]");
     if (vote) { event.stopPropagation(); voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
+    const favorite = event.target.closest("[data-note-favorite]");
+    if (favorite) { event.stopPropagation(); favoriteAnnotation(favorite.dataset.noteFavorite); return; }
     const card = event.target.closest("[data-cfi]");
     if (card && !event.target.closest("form,button,input")) readerState.rendition.display(card.dataset.cfi);
   });
   document.getElementById("annotation-list").addEventListener("submit", (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); if (input.value.trim()) replyAnnotation(form.dataset.replyForm, input.value); });
-  document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) window.libraryAuth.logout(); else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
-  window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "登出" : "登入"; if (readerState.rendition) loadAnnotations(); });
+  document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) location.href = "/account.html"; else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
+  window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; if (readerState.rendition) loadAnnotations(); });
 }
 
 async function initialize() {
@@ -403,7 +439,7 @@ async function initialize() {
   }
   try {
     await window.libraryAuth.ready;
-    document.getElementById("reader-login").textContent = window.libraryAuth.user ? "登出" : "登入";
+    document.getElementById("reader-login").textContent = window.libraryAuth.user ? "書房" : "登入";
     const record = await loadBookRecord();
     await initializeEpub(record);
     await loadAnnotations();

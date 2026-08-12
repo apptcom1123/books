@@ -2,6 +2,15 @@
 -- No secret/service-role key is required by the deployed Vercel application.
 begin;
 
+do $$
+begin
+  if to_regclass('public.library_books') is null then
+    raise exception 'LIBRARY_SCHEMA_REQUIRED'
+      using hint = 'Run server/db/library-schema.sql successfully before this seed file.';
+  end if;
+end
+$$;
+
 insert into public.library_books (
   id, source, source_id, title_original, title_zh, author, author_death_year,
   description_zh, category, subcategory, language, edition_release_date,

@@ -45,6 +45,8 @@ a { color: inherit; }
 .user-toggle span { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 700; }
 .user-dropdown { position: absolute; right: 0; top: calc(100% + 10px); width: 220px; padding: 13px; background: var(--white); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
 .user-dropdown span { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; margin-bottom: 9px; }
+.user-dropdown a { display:flex; align-items:center; justify-content:space-between; margin:0 0 8px; padding:9px; border-radius:8px; color:var(--green); background:#f4ede2; font-size:12px; font-weight:800; }
+.user-dropdown .menu-count { display:inline-grid; min-width:19px; height:19px; place-items:center; margin:0; padding:0 5px; border-radius:10px; color:#fff; background:var(--rust); font-size:9px; }
 .user-dropdown button { width: 100%; border: 0; background: #eee5d7; padding: 9px; border-radius: 8px; cursor: pointer; }
 
 .hero { min-height: 560px; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); padding: clamp(54px, 7vw, 102px) clamp(20px, 8vw, 128px); gap: 7vw; overflow: hidden; border-bottom: 1px solid var(--line); background: radial-gradient(circle at 78% 28%, rgba(197,141,58,.16), transparent 28%), linear-gradient(115deg, rgba(255,255,255,.25), transparent 55%); }
@@ -93,6 +95,7 @@ a { color: inherit; }
 .book-author { color: #4d514c; font-size: 12px; margin: 8px 0; }
 .book-description { color: var(--muted); font: 400 13px/1.65 var(--serif); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; min-height: 64px; }
 .book-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 11px; margin-top: 11px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+.review-button { border:0; background:transparent; color:var(--rust); padding:2px; cursor:pointer; font-size:10px; font-weight:800; }
 .rating { display: flex; gap: 1px; }
 .star { border: 0; padding: 0 1px; background: transparent; color: #b9b3a7; cursor: pointer; font-size: 15px; }
 .star.active { color: var(--gold); }
@@ -147,6 +150,7 @@ a { color: inherit; }
 .toast-region { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 8px; z-index: 100; }
 .toast { max-width: 360px; padding: 12px 15px; border-radius: 6px; background: #171b18; color: #fff; box-shadow: var(--shadow); font-size: 13px; animation: toast-in .2s ease-out; }
 .toast.error { background: #8d3826; }
+.review-dialog { width:min(760px,calc(100vw - 24px)); max-height:90vh; }.review-dialog-shell { padding:27px; }.review-dialog .review-form { margin:0 0 24px; padding:18px; border:1px solid var(--line); background:#f7f0e5; }.review-form h3 { margin:0 0 8px; font:700 20px var(--serif); }.review-rating { display:flex; gap:2px; }.review-rating button { border:0; background:transparent; color:#c9bda8; padding:1px; font-size:25px; cursor:pointer; }.review-rating button.active { color:#b55f38; }.review-summary { display:flex; gap:12px; align-items:center; margin:-10px 0 18px; color:var(--muted); font-size:12px; }.review-summary strong { color:var(--green); font:700 25px var(--serif); }.review-list { display:grid; gap:10px; }.review-card { padding:16px; border:1px solid var(--line); background:#fffdf8; }.review-head { display:flex; align-items:center; gap:9px; }.review-head img { width:30px; height:30px; border-radius:50%; object-fit:cover; }.review-head time { margin-left:auto; color:var(--muted); font-size:9px; }.review-card p { white-space:pre-wrap; line-height:1.65; }.review-like { border:0; background:#eee5d7; padding:6px 9px; color:var(--green); cursor:pointer; font-size:10px; }.review-like.active { color:#fff; background:var(--rust); }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } }
 
 @media (max-width: 1180px) { .book-grid { grid-template-columns: repeat(4, 1fr); }.hero { grid-template-columns: 1fr .62fr; }.book-shape { width: 92px; }.source-note { grid-template-columns: 1fr 1fr; }.rights-copy { grid-column: 1 / -1; padding: 20px 0 0; border-left: 0; border-top: 1px solid rgba(255,255,255,.2); } }

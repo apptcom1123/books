@@ -35,15 +35,24 @@ test("runtime starts with only the two existing NEXT_PUBLIC Supabase variables",
 test("runtime code has no secret-key dependency and database authorization is RLS-first", () => {
   const appSource = fs.readFileSync(path.join(ROOT, "server", "app.js"), "utf8");
   const middlewareSource = fs.readFileSync(path.join(ROOT, "server", "middleware", "auth.js"), "utf8");
+  const browserAuthSource = fs.readFileSync(path.join(ROOT, "public", "auth.js"), "utf8");
   const schema = fs.readFileSync(path.join(ROOT, "server", "db", "library-schema.sql"), "utf8");
   const envExample = fs.readFileSync(path.join(ROOT, ".env.example"), "utf8");
   assert.doesNotMatch(`${appSource}\n${middlewareSource}\n${envExample}`, /SUPABASE_SERVICE|service_role|sb_secret/);
+  assert.match(browserAuthSource, /redirectTo:\s*`\$\{location\.origin\}\/`/);
+  assert.doesNotMatch(browserAuthSource, /redirectTo:[^\n]*localhost/);
   assert.match(appSource, /Authorization: `Bearer \$\{accessToken\}`/);
   assert.match(schema, /create policy book_ratings_own_insert/i);
   assert.match(schema, /create policy book_annotations_visible_read/i);
+  assert.match(schema, /create policy library_notifications_own_read/i);
+  assert.match(schema, /create policy library_user_settings_own_update/i);
+  assert.match(schema, /create trigger library_notify_annotation_favorite/i);
+  assert.match(schema, /create trigger library_notify_review_like/i);
+  assert.match(schema, /create or replace function public\.update_library_profile\(p_public_display_name text\)/i);
   assert.match(schema, /create or replace function public\.record_book_open\(p_book_id text, p_reader_key text\)/i);
   assert.match(schema, /grant execute on function public\.get_book_public_metrics\(text\[\]\) to anon, authenticated/i);
   assert.doesNotMatch(schema, /grant .* to service_role/i);
+  assert.doesNotMatch(schema, /grant insert[^;]*library_notifications[^;]*to authenticated/i);
 });
 
 test("generated SQL seed contains all 200 public-domain catalog rows", () => {
@@ -51,5 +60,7 @@ test("generated SQL seed contains all 200 public-domain catalog rows", () => {
   const catalog = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "catalog.json"), "utf8"));
   assert.equal(catalog.length, 200);
   for (const book of catalog) assert.ok(seed.includes(`'${book.id.replaceAll("'", "''")}'`), `seed missing ${book.id}`);
+  assert.match(seed, /to_regclass\('public\.library_books'\)/i);
+  assert.match(seed, /LIBRARY_SCHEMA_REQUIRED/i);
   assert.match(seed, /on conflict \(id\) do update/i);
 });

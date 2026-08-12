@@ -11,6 +11,8 @@ import authRoutes from "./routes/auth.js";
 import booksRoutes from "./routes/books.js";
 import annotationsRoutes from "./routes/annotations.js";
 import feedbackRoutes from "./routes/feedback.js";
+import accountRoutes from "./routes/account.js";
+import realtimeRoutes from "./routes/realtime.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -96,6 +98,8 @@ export async function createApp({ serveStatic = false } = {}) {
   app.use("/api/books", booksRoutes);
   app.use("/api", annotationsRoutes);
   app.use("/api/feedback", feedbackRoutes);
+  app.use("/api/me", accountRoutes);
+  app.use("/api/realtime", realtimeRoutes);
 
   app.use((req, res) => res.status(404).json({ error: "NOT_FOUND", message: "找不到指定的資源。" }));
   app.use((error, _req, res, _next) => {

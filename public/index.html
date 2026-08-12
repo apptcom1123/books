@@ -10,6 +10,7 @@
   <script src="/vendor/supabase.js" defer></script>
   <script src="/auth.js" defer></script>
   <script src="/api.js" defer></script>
+  <script src="/realtime.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -22,6 +23,7 @@
       <a href="#collection">探索館藏</a>
       <a href="#feedback">讀者回饋</a>
       <button id="favorites-filter" class="nav-button" type="button">我的收藏</button>
+      <a href="/account.html">我的書房</a>
     </nav>
     <div class="auth-area">
       <button id="login-button" class="button button-dark" type="button">Google 登入</button>
@@ -32,6 +34,7 @@
         </button>
         <div id="user-dropdown" class="user-dropdown" hidden>
           <span id="user-email"></span>
+          <a href="/account.html">我的書房 <span id="header-notification-count" class="menu-count" hidden></span></a>
           <button id="logout-button" type="button">登出</button>
         </div>
       </div>
@@ -115,6 +118,20 @@
       <label>內容<textarea id="feedback-content" maxlength="2000" rows="6" required placeholder="請描述你的想法或遇到的問題…"></textarea></label>
       <div class="dialog-actions"><button class="button button-quiet" type="button" data-dialog-close="feedback-dialog">取消</button><button id="feedback-submit" class="button button-dark" type="submit">送出</button></div>
     </form>
+  </dialog>
+
+  <dialog id="review-dialog" class="dialog review-dialog">
+    <div class="review-dialog-shell">
+      <div class="dialog-head"><div><p class="eyebrow">READER REVIEWS</p><h2 id="review-dialog-title">讀者評論</h2></div><button class="icon-close" type="button" data-dialog-close="review-dialog" aria-label="關閉">×</button></div>
+      <div id="review-summary" class="review-summary"></div>
+      <form id="review-form" class="review-form">
+        <h3>留下你的評論</h3>
+        <div id="review-rating" class="review-rating" aria-label="選擇評分"></div>
+        <label>評論內容<textarea id="review-content" maxlength="4000" rows="5" required placeholder="分享無劇透心得、線索觀察或閱讀感受…"></textarea></label>
+        <div class="dialog-actions"><button id="review-submit" class="button button-dark" type="submit">發表評論</button></div>
+      </form>
+      <div id="review-list" class="review-list"></div>
+    </div>
   </dialog>
 
   <div id="toast-region" class="toast-region" aria-live="polite"></div>

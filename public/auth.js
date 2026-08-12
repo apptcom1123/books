@@ -14,6 +14,18 @@ class LibraryAuth {
       if (!config.supabaseUrl || !config.supabasePublishableKey || !window.supabase) throw new Error("Supabase 登入尚未設定");
       this.client = window.supabase.createClient(config.supabaseUrl, config.supabasePublishableKey, {
         auth: { flowType: "pkce", persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+        realtime: {
+          heartbeatIntervalMs: 30_000,
+          disconnectOnEmptyChannelsAfterMs: 12_000,
+          reconnectAfterMs: (tries) => {
+            const delays = [1_000, 2_000, 5_000, 10_000, 30_000];
+            const base = delays[Math.min(Math.max(tries - 1, 0), delays.length - 1)];
+            return base + Math.floor(Math.random() * Math.min(1_000, base * 0.2));
+          },
+          heartbeatCallback: (status, latency) => window.dispatchEvent(new CustomEvent("library-realtime-heartbeat", {
+            detail: { status, latency: Number.isFinite(latency) ? latency : null, at: Date.now() },
+          })),
+        },
       });
       const { data } = await this.client.auth.getSession();
       this.session = data.session || null;

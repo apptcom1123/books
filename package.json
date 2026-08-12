@@ -10,6 +10,8 @@
     "dev": "node server/index.js",
     "dev:with-build": "npm run build && node server/index.js",
     "seed": "node scripts/generate-seed-sql.js",
+    "verify:supabase": "node scripts/verify-supabase.js",
+    "test:authenticated": "node scripts/authenticated-smoke.js",
     "test": "node --test"
   },
   "dependencies": {

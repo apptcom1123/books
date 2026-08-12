@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f3ecdf">
+  <meta name="description" content="管理你的謎讀收藏、閱讀進度、評論、標注與通知。">
+  <title>我的書房・謎讀</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/account.css">
+  <script src="/vendor/supabase.js" defer></script>
+  <script src="/auth.js" defer></script>
+  <script src="/api.js" defer></script>
+  <script src="/realtime.js" defer></script>
+  <script src="/account.js" defer></script>
+</head>
+<body class="account-page">
+  <header class="site-header account-header">
+    <a class="brand" href="/" aria-label="回到謎讀首頁">
+      <span class="brand-mark">謎</span>
+      <span><strong>謎讀</strong><small>Mystery Commons</small></span>
+    </a>
+    <nav class="top-nav" aria-label="書房導覽"><a href="/">探索館藏</a><a href="/account.html" aria-current="page">我的書房</a></nav>
+    <button id="account-logout" class="button button-quiet" type="button" hidden>登出</button>
+  </header>
+
+  <main class="account-shell">
+    <section id="account-gate" class="account-gate">
+      <span class="gate-mark">謎</span>
+      <p class="eyebrow">PRIVATE READING ROOM</p>
+      <h1>登入後進入你的書房</h1>
+      <p>收藏、閱讀進度、評論、私人標注與通知，只會顯示給目前登入的帳號。</p>
+      <button id="account-login" class="button button-dark" type="button">使用 Google 登入</button>
+    </section>
+
+    <div id="account-content" hidden>
+      <section class="account-hero">
+        <div class="profile-card">
+          <img id="account-avatar" alt="" referrerpolicy="no-referrer">
+          <div><p class="eyebrow">MY READING ROOM</p><h1 id="account-name">我的書房</h1><p id="account-email"></p></div>
+        </div>
+        <div id="account-stats" class="account-stats" aria-label="書房摘要"></div>
+      </section>
+
+      <nav class="account-tabs" aria-label="個人中心功能">
+        <button class="active" type="button" data-account-tab="overview">總覽</button>
+        <button type="button" data-account-tab="favorites">收藏與閱讀</button>
+        <button type="button" data-account-tab="activity">評論與標注</button>
+        <button type="button" data-account-tab="notifications">通知 <span id="notification-tab-count" class="count-badge" hidden></span></button>
+        <button type="button" data-account-tab="settings">個人設定</button>
+      </nav>
+
+      <section class="account-panel" data-account-panel="overview">
+        <div class="panel-title"><div><p class="eyebrow">AT A GLANCE</p><h2>最近的閱讀足跡</h2></div><a href="/">找下一本書 →</a></div>
+        <div id="overview-reading" class="account-book-grid"></div>
+        <div class="overview-columns">
+          <div><h3>最近評論</h3><div id="overview-reviews" class="activity-list"></div></div>
+          <div><h3>最新通知</h3><div id="overview-notifications" class="notification-list"></div></div>
+        </div>
+      </section>
+
+      <section class="account-panel" data-account-panel="favorites" hidden>
+        <div class="panel-title"><div><p class="eyebrow">YOUR SHELVES</p><h2>收藏與閱讀</h2></div></div>
+        <h3>收藏的圖書</h3><div id="favorite-books" class="account-book-grid"></div>
+        <h3 class="subsection-title">閱讀進度</h3><div id="reading-books" class="account-book-grid"></div>
+        <h3 class="subsection-title">我的評分</h3><div id="rating-list" class="activity-list"></div>
+      </section>
+
+      <section class="account-panel" data-account-panel="activity" hidden>
+        <div class="panel-title"><div><p class="eyebrow">YOUR MARGINALIA</p><h2>評論與標注</h2></div></div>
+        <h3>我的書評</h3><div id="my-reviews" class="activity-list"></div>
+        <h3 class="subsection-title">我的標注</h3><div id="my-annotations" class="activity-list"></div>
+        <h3 class="subsection-title">我的回覆</h3><div id="my-replies" class="activity-list"></div>
+        <h3 class="subsection-title">收藏的公開標注</h3><div id="saved-annotations" class="activity-list"></div>
+      </section>
+
+      <section class="account-panel" data-account-panel="notifications" hidden>
+        <div class="panel-title"><div><p class="eyebrow">INBOX</p><h2>互動通知</h2></div><button id="mark-all-read" class="button button-quiet" type="button">全部標為已讀</button></div>
+        <p id="realtime-health" class="realtime-health" role="status"><i></i><span>正在建立即時連線…</span></p>
+        <p class="panel-note">當其他讀者回覆、讚賞或收藏你的公開內容時，通知會出現在這裡。</p>
+        <div id="notification-list" class="notification-list"></div>
+      </section>
+
+      <section class="account-panel" data-account-panel="settings" hidden>
+        <div class="panel-title"><div><p class="eyebrow">PREFERENCES</p><h2>個人與通知設定</h2></div></div>
+        <div class="settings-columns">
+          <form id="profile-form" class="settings-card">
+            <h3>公開身分</h3><p>此名稱會顯示在公開評論、標注與回覆旁，Gmail 地址不會公開。</p>
+            <label>公開顯示名稱<input id="public-display-name" minlength="2" maxlength="80" required></label>
+            <label>登入帳號<input id="profile-email" disabled></label>
+            <button class="button button-dark" type="submit">儲存名稱</button>
+          </form>
+          <form id="notification-settings-form" class="settings-card">
+            <h3>通知訂閱</h3><p>關閉後只停止建立之後的新通知，不會刪除既有通知。</p>
+            <label class="toggle-row"><span><strong>標注收到回覆</strong><small>有人接續你的推論或問題</small></span><input id="notify-annotation-replies" type="checkbox"></label>
+            <label class="toggle-row"><span><strong>標注收到讚賞</strong><small>有人對你的公開標注按讚</small></span><input id="notify-annotation-likes" type="checkbox"></label>
+            <label class="toggle-row"><span><strong>標注被收藏</strong><small>有人把你的公開標注收入書房</small></span><input id="notify-annotation-favorites" type="checkbox"></label>
+            <label class="toggle-row"><span><strong>書評收到讚賞</strong><small>有人喜歡你的書籍評論</small></span><input id="notify-review-likes" type="checkbox"></label>
+            <label class="toggle-row"><span><strong>讀者回饋收到回覆</strong><small>館員或其他讀者回覆你的建議</small></span><input id="notify-feedback-replies" type="checkbox"></label>
+            <button class="button button-dark" type="submit">儲存通知設定</button>
+          </form>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="activity-dialog" class="dialog activity-dialog">
+    <form id="activity-form" method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">EDIT</p><h2 id="activity-dialog-title">編輯內容</h2></div><button class="icon-close" type="button" data-activity-close aria-label="關閉">×</button></div>
+      <input id="activity-kind" type="hidden"><input id="activity-id" type="hidden"><input id="activity-book-id" type="hidden">
+      <div id="activity-rating-wrap" class="edit-rating" hidden><span>評分</span><div id="activity-rating"></div></div>
+      <label>內容<textarea id="activity-content-input" maxlength="4000" rows="7" required></textarea></label>
+      <label id="activity-visibility-wrap" class="visibility-choice" hidden><input id="activity-public" type="checkbox"><span>公開給所有讀者</span></label>
+      <div class="dialog-actions"><button class="button button-quiet" type="button" data-activity-close>取消</button><button class="button button-dark" type="submit">儲存修改</button></div>
+    </form>
+  </dialog>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</body>
+</html>

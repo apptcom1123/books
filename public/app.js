@@ -7,6 +7,15 @@ const state = {
   requestId: 0,
   pagination: { total: 0, hasMore: false },
   feedback: [],
+  reviewBook: null,
+  reviews: [],
+  reviewRating: 0,
+  apiWarningShown: false,
+  notificationRealtimeStop: null,
+  notificationRealtimeUserId: null,
+  reviewRealtimeStop: null,
+  reviewRealtimeBookId: null,
+  reviewRefreshTimer: null,
 };
 
 const elements = {
@@ -25,6 +34,9 @@ const elements = {
   feedbackList: document.getElementById("feedback-list"),
   feedbackDialog: document.getElementById("feedback-dialog"),
   feedbackForm: document.getElementById("feedback-form"),
+  reviewDialog: document.getElementById("review-dialog"),
+  reviewForm: document.getElementById("review-form"),
+  reviewList: document.getElementById("review-list"),
 };
 
 function escapeHtml(value = "") {
@@ -75,6 +87,7 @@ function bookCard(book) {
         ${progress}
         <div class="book-stats">
           <div class="rating" aria-label="我的評分">${stars}</div>
+          <button class="review-button" type="button" data-action="reviews" data-book-id="${book.id}">${book.metrics.reviewCount || 0} 則評論</button>
           <span title="不重複讀者人數">◉ ${book.metrics.readerCount.toLocaleString("zh-TW")} 人閱讀</span>
         </div>
       </div>
@@ -113,7 +126,7 @@ async function loadStaticCatalog({ limit, offset }) {
     if (state.filters.source && book.source !== state.filters.source) return false;
     const haystack = [book.title_zh, book.title_original, book.author, book.description_zh, ...(book.subjects || [])].join(" ").toLocaleLowerCase("zh-Hant");
     return !query || query.split(/\s+/).every((term) => haystack.includes(term));
-  }).map((book) => ({ ...book, metrics: { readerCount: 0, ratingCount: 0, averageRating: 0, favoriteCount: 0, annotationCount: 0 }, viewer: { rating: 0, isFavorite: false, progress: JSON.parse(localStorage.getItem(`mystery-library:progress:${book.id}`) || "null") } }));
+  }).map((book) => ({ ...book, metrics: { readerCount: 0, ratingCount: 0, averageRating: 0, favoriteCount: 0, annotationCount: 0, reviewCount: 0 }, viewer: { rating: 0, isFavorite: false, progress: JSON.parse(localStorage.getItem(`mystery-library:progress:${book.id}`) || "null") } }));
   if (state.filters.sort === "title") books.sort((a, b) => a.title_zh.localeCompare(b.title_zh, "zh-Hant"));
   else if (state.filters.sort === "newest") books.sort((a, b) => String(b.edition_release_date).localeCompare(String(a.edition_release_date)));
   const total = books.length;
@@ -143,6 +156,10 @@ async function loadBooks({ append = false } = {}) {
     } catch (apiError) {
       result = await loadStaticCatalog({ limit: PAGE_SIZE, offset });
       console.warn("API unavailable; showing the read-only static catalog.", apiError);
+      if (!state.apiWarningShown) {
+        state.apiWarningShown = true;
+        toast("互動資料庫尚未連線；目前可瀏覽與閱讀，但收藏、評論與標注暫不可用。", "error");
+      }
     }
     if (requestId !== state.requestId) return;
     state.books = append
@@ -239,6 +256,105 @@ async function loadFeedback() {
   }
 }
 
+function renderReviewRating() {
+  document.getElementById("review-rating").innerHTML = Array.from({ length: 5 }, (_, index) => `<button class="${index < state.reviewRating ? "active" : ""}" type="button" data-review-rating="${index + 1}" aria-label="${index + 1} 顆星">★</button>`).join("");
+}
+
+function renderReviews() {
+  const book = state.reviewBook;
+  if (!book) return;
+  document.getElementById("review-dialog-title").textContent = `《${book.title_zh}》讀者評論`;
+  document.getElementById("review-summary").innerHTML = `<strong>${Number(book.metrics.averageRating || 0).toFixed(1)}</strong><span>${book.metrics.ratingCount || 0} 份評分 ・ ${state.reviews.length} 則文字評論</span>`;
+  const own = state.reviews.find((review) => review.isOwner);
+  state.reviewRating = own ? (book.viewer.rating || 0) : (book.viewer.rating || state.reviewRating || 0);
+  if (own && !document.getElementById("review-content").value) document.getElementById("review-content").value = own.content;
+  document.getElementById("review-submit").textContent = own ? "更新評論" : "發表評論";
+  renderReviewRating();
+  elements.reviewList.innerHTML = state.reviews.length ? state.reviews.map((review) => `<article class="review-card">
+    <div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt=""><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
+    <p>${escapeHtml(review.content)}</p>
+    <button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}">${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button>
+  </article>`).join("") : '<p class="muted">還沒有文字評論，分享第一則無劇透心得吧。</p>';
+}
+
+async function openReviews(bookId) {
+  try {
+    state.reviewBook = state.books.find((book) => book.id === bookId) || (await window.libraryApi.get(`/books/${encodeURIComponent(bookId)}`)).book;
+    state.reviewRating = state.reviewBook.viewer.rating || 0;
+    document.getElementById("review-content").value = "";
+    elements.reviewList.innerHTML = '<p class="muted">正在取回評論…</p>';
+    if (!elements.reviewDialog.open) elements.reviewDialog.showModal();
+    syncReviewRealtime(bookId);
+    await refreshReviews(bookId);
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function refreshReviews(bookId) {
+  if (!state.reviewBook || state.reviewBook.id !== bookId || !elements.reviewDialog.open) return;
+  const [bookResult, reviewResult] = await Promise.all([
+    window.libraryApi.get(`/books/${encodeURIComponent(bookId)}`),
+    window.libraryApi.get(`/books/${encodeURIComponent(bookId)}/reviews`),
+  ]);
+  if (!state.reviewBook || state.reviewBook.id !== bookId || !elements.reviewDialog.open) return;
+  state.reviewBook = bookResult.book;
+  state.reviews = reviewResult.reviews;
+  const cardBook = state.books.find((book) => book.id === bookId);
+  if (cardBook) {
+    Object.assign(cardBook.metrics, bookResult.book.metrics);
+    Object.assign(cardBook.viewer, bookResult.book.viewer);
+  }
+  renderBooks();
+  renderReviews();
+}
+
+function syncReviewRealtime(bookId = null) {
+  if (state.reviewRealtimeBookId === bookId && state.reviewRealtimeStop) return;
+  state.reviewRealtimeStop?.();
+  state.reviewRealtimeStop = null;
+  state.reviewRealtimeBookId = null;
+  if (!bookId || !window.libraryRealtime) return;
+  state.reviewRealtimeBookId = bookId;
+  state.reviewRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
+    if (events.length && !events.some((event) => ["review", "review_like"].includes(event.resource))) return;
+    clearTimeout(state.reviewRefreshTimer);
+    state.reviewRefreshTimer = setTimeout(() => refreshReviews(bookId).catch(() => {}), 320);
+  });
+}
+
+async function submitReview(event) {
+  event.preventDefault();
+  if (!requireLogin() || !state.reviewBook) return;
+  if (!state.reviewRating) return toast("請先選擇 1 到 5 顆星。", "error");
+  const submit = document.getElementById("review-submit");
+  submit.disabled = true;
+  try {
+    const result = await window.libraryApi.put(`/books/${encodeURIComponent(state.reviewBook.id)}/review`, {
+      rating: state.reviewRating,
+      content: document.getElementById("review-content").value,
+    });
+    Object.assign(state.reviewBook.metrics, result.metrics);
+    Object.assign(state.reviewBook.viewer, result.viewer);
+    const index = state.reviews.findIndex((review) => review.id === result.review.id);
+    if (index >= 0) state.reviews[index] = result.review; else state.reviews.unshift(result.review);
+    const cardBook = state.books.find((book) => book.id === state.reviewBook.id);
+    if (cardBook && cardBook !== state.reviewBook) { Object.assign(cardBook.metrics, result.metrics); Object.assign(cardBook.viewer, result.viewer); }
+    renderBooks();
+    renderReviews();
+    toast("評論已儲存");
+  } catch (error) { toast(error.message, "error"); }
+  finally { submit.disabled = false; }
+}
+
+async function toggleReviewLike(reviewId) {
+  if (!requireLogin()) return;
+  try {
+    const result = await window.libraryApi.post(`/reviews/${encodeURIComponent(reviewId)}/like`);
+    const index = state.reviews.findIndex((review) => review.id === reviewId);
+    if (index >= 0) state.reviews[index] = result.review;
+    renderReviews();
+  } catch (error) { toast(error.message, "error"); }
+}
+
 function openFeedback(parentId = "", subject = "") {
   if (!requireLogin()) return;
   document.getElementById("feedback-parent").value = parentId;
@@ -253,11 +369,32 @@ function renderAuth(user) {
   document.getElementById("login-button").hidden = Boolean(user);
   const menu = document.getElementById("user-menu");
   menu.hidden = !user;
-  if (!user) return;
+  if (!user) { document.getElementById("header-notification-count").hidden = true; return; }
   document.getElementById("user-name").textContent = user.publicDisplayName || user.displayName;
   document.getElementById("user-email").textContent = user.email;
   const avatar = document.getElementById("user-avatar");
   avatar.src = user.avatarUrl || avatarFor({ public_display_name: user.publicDisplayName || user.displayName });
+  loadNotificationSummary();
+}
+
+function loadNotificationSummary() {
+  if (!window.libraryAuth.user) return;
+  window.libraryApi.get("/me/summary").then((summary) => {
+    const badge = document.getElementById("header-notification-count");
+    badge.hidden = !summary.unread;
+    badge.textContent = summary.unread || "";
+  }).catch(() => {});
+}
+
+function syncNotificationRealtime(user) {
+  if (state.notificationRealtimeUserId === user?.id && state.notificationRealtimeStop) return;
+  state.notificationRealtimeStop?.();
+  state.notificationRealtimeStop = null;
+  state.notificationRealtimeUserId = null;
+  if (user && window.libraryRealtime) {
+    state.notificationRealtimeUserId = user.id;
+    state.notificationRealtimeStop = window.libraryRealtime.subscribeNotifications(() => loadNotificationSummary());
+  }
 }
 
 function wireEvents() {
@@ -275,6 +412,7 @@ function wireEvents() {
     event.preventDefault();
     if (target.dataset.action === "rate") rateBook(target.dataset.bookId, Number(target.dataset.rating));
     if (target.dataset.action === "favorite") toggleFavorite(target.dataset.bookId);
+    if (target.dataset.action === "reviews") openReviews(target.dataset.bookId);
   });
   document.getElementById("new-feedback-button").addEventListener("click", () => openFeedback());
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
@@ -296,10 +434,20 @@ function wireEvents() {
     } catch (error) { toast(error.message, "error"); }
     finally { submit.disabled = false; }
   });
+  elements.reviewForm.addEventListener("submit", submitReview);
+  document.getElementById("review-rating").addEventListener("click", (event) => { const button = event.target.closest("[data-review-rating]"); if (!button) return; state.reviewRating = Number(button.dataset.reviewRating); renderReviewRating(); });
+  elements.reviewList.addEventListener("click", (event) => { const button = event.target.closest("[data-review-like]"); if (button) toggleReviewLike(button.dataset.reviewLike); });
+  elements.reviewDialog.addEventListener("close", () => syncReviewRealtime());
   document.getElementById("login-button").addEventListener("click", () => window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")));
   document.getElementById("logout-button").addEventListener("click", () => window.libraryAuth.logout());
   document.getElementById("user-toggle").addEventListener("click", () => { const dropdown = document.getElementById("user-dropdown"); dropdown.hidden = !dropdown.hidden; });
-  window.addEventListener("library-auth-changed", (event) => { renderAuth(event.detail.user); if (!state.loading && state.books.length) loadBooks(); loadFeedback(); });
+  window.addEventListener("library-auth-changed", (event) => {
+    renderAuth(event.detail.user);
+    syncNotificationRealtime(event.detail.user);
+    if (!state.loading && state.books.length) loadBooks();
+    loadFeedback();
+    if (state.reviewBook && elements.reviewDialog.open) refreshReviews(state.reviewBook.id).catch(() => {});
+  });
 }
 
 async function initialize() {
@@ -307,7 +455,10 @@ async function initialize() {
   renderSkeletons();
   await window.libraryAuth.ready;
   renderAuth(window.libraryAuth.user);
+  syncNotificationRealtime(window.libraryAuth.user);
   await Promise.all([loadBooks(), loadFeedback()]);
+  const requestedReview = new URLSearchParams(location.search).get("review");
+  if (requestedReview) openReviews(requestedReview);
 }
 
 initialize();
