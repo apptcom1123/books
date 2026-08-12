@@ -36,11 +36,11 @@ function bookTile(entry, mode = "favorite") {
   </article>`;
 }
 
-function reviewCard(review, compact = false) {
+function reviewCard(review, compact = false, saved = false) {
   return `<article class="activity-card">
     <div class="activity-card-head"><div><h4><a href="/?review=${encodeURIComponent(review.book_id)}#collection">${escapeHtml(review.book.title_zh)}</a></h4><span class="activity-meta">${"★".repeat(review.book.viewer?.rating || 0)}${"☆".repeat(5 - (review.book.viewer?.rating || 0))} ・ ${review.likeCount} 人讚賞</span></div><time class="activity-meta">${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
     <p>${escapeHtml(compact ? review.content.slice(0, 150) : review.content)}${compact && review.content.length > 150 ? "…" : ""}</p>
-    ${compact ? "" : `<div class="activity-actions"><button class="mini-action" type="button" data-edit-review="${review.id}">編輯</button><button class="mini-action danger" type="button" data-delete-review="${review.id}">刪除</button></div>`}
+    ${compact ? "" : `<div class="activity-actions">${saved ? `<a class="mini-action" href="/?review=${encodeURIComponent(review.book_id)}#collection">查看評論</a><button class="mini-action danger" type="button" data-unsave-review="${review.id}">移出收藏</button>` : `<button class="mini-action" type="button" data-edit-review="${review.id}">編輯</button><button class="mini-action danger" type="button" data-delete-review="${review.id}">刪除</button>`}</div>`}
   </article>`;
 }
 
@@ -59,7 +59,7 @@ function replyCard(reply) {
 function notificationLink(notification) {
   if (notification.target_type === "annotation" && notification.book_id) return `/reader.html?id=${encodeURIComponent(notification.book_id)}&note=${encodeURIComponent(notification.target_id)}`;
   if (notification.target_type === "review" && notification.book_id) return `/?review=${encodeURIComponent(notification.book_id)}#collection`;
-  if (notification.target_type === "feedback") return "/#feedback";
+  if (notification.target_type === "feedback") return `/feedback.html?thread=${encodeURIComponent(notification.target_id || "")}`;
   return "/account.html#notifications";
 }
 
@@ -95,6 +95,7 @@ function renderAccount() {
   $("reading-books").innerHTML = data.reading.length ? data.reading.map((entry) => bookTile(entry, "reading")).join("") : empty("還沒有同步閱讀進度。");
   $("rating-list").innerHTML = data.ratings.length ? data.ratings.map((entry) => `<article class="activity-card"><div class="activity-card-head"><h4><a href="/reader.html?id=${encodeURIComponent(entry.book.id)}">${escapeHtml(entry.book.title_zh)}</a></h4><strong aria-label="${entry.rating} 顆星">${"★".repeat(entry.rating)}${"☆".repeat(5 - entry.rating)}</strong></div></article>`).join("") : empty("還沒有評分紀錄。");
   $("my-reviews").innerHTML = data.reviews.length ? data.reviews.map((review) => reviewCard(review)).join("") : empty("還沒有發表書評。");
+  $("saved-reviews").innerHTML = data.savedReviews?.length ? data.savedReviews.map((review) => reviewCard(review, false, true)).join("") : empty("還沒有收藏其他讀者的評論。");
   $("my-annotations").innerHTML = data.annotations.length ? data.annotations.map((annotation) => annotationCard(annotation)).join("") : empty("還沒有建立標注。");
   $("my-replies").innerHTML = data.replies.length ? data.replies.map(replyCard).join("") : empty("還沒有回覆其他標注。");
   $("saved-annotations").innerHTML = data.savedAnnotations.length ? data.savedAnnotations.map((annotation) => annotationCard(annotation, { saved: true })).join("") : empty("還沒有收藏其他讀者的公開標注。");
@@ -105,6 +106,8 @@ function renderAccount() {
     ["notify-annotation-favorites", "notifyAnnotationFavorites"], ["notify-review-likes", "notifyReviewLikes"],
     ["notify-feedback-replies", "notifyFeedbackReplies"],
   ]) $(id).checked = Boolean(data.settings[key]);
+  $("account-annotation-threshold").value = String(data.settings.annotationVisibilityThreshold ?? 50);
+  $("account-threshold-output").value = `${data.settings.annotationVisibilityThreshold ?? 50}%`;
 }
 
 async function loadAccount() {
@@ -228,6 +231,12 @@ function wireAccountEvents() {
       catch (error) { toast(error.message, "error"); }
       return;
     }
+    const unsaveReview = event.target.closest("[data-unsave-review]");
+    if (unsaveReview) {
+      try { await window.libraryApi.post(`/reviews/${encodeURIComponent(unsaveReview.dataset.unsaveReview)}/favorite`); await loadAccountAfterMutation(); toast("已移出評論收藏"); }
+      catch (error) { toast(error.message, "error"); }
+      return;
+    }
     const notification = event.target.closest("[data-notification-id]");
     if (notification) openNotification(notification);
   });
@@ -263,10 +272,12 @@ function wireAccountEvents() {
         notifyAnnotationFavorites: $("notify-annotation-favorites").checked,
         notifyReviewLikes: $("notify-review-likes").checked,
         notifyFeedbackReplies: $("notify-feedback-replies").checked,
+        annotationVisibilityThreshold: Number($("account-annotation-threshold").value),
       });
       accountState.data.settings = result.settings; renderAccount(); toast("通知設定已儲存");
     } catch (error) { toast(error.message, "error"); }
   });
+  $("account-annotation-threshold").addEventListener("input", () => { $("account-threshold-output").value = `${$("account-annotation-threshold").value}%`; });
   $("mark-all-read").addEventListener("click", async () => {
     try { await window.libraryApi.post("/me/notifications/read-all"); await loadAccountAfterMutation(); toast("通知已全部標為已讀"); }
     catch (error) { toast(error.message, "error"); }

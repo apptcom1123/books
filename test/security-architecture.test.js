@@ -49,6 +49,8 @@ test("runtime code has no secret-key dependency and database authorization is RL
   assert.match(schema, /create trigger library_notify_annotation_favorite/i);
   assert.match(schema, /create trigger library_notify_review_like/i);
   assert.match(schema, /create or replace function public\.update_library_profile\(p_public_display_name text\)/i);
+  assert.match(schema, /on conflict on constraint users_pkey do update/i);
+  assert.doesNotMatch(schema, /on conflict \(id\) do update[\s\S]*?insert into public\.library_user_settings/i);
   assert.match(schema, /create or replace function public\.record_book_open\(p_book_id text, p_reader_key text\)/i);
   assert.match(schema, /grant execute on function public\.get_book_public_metrics\(text\[\]\) to anon, authenticated/i);
   assert.doesNotMatch(schema, /grant .* to service_role/i);

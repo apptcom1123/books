@@ -92,6 +92,13 @@ create table if not exists public.book_review_likes (
   primary key (review_id, user_id)
 );
 
+create table if not exists public.book_review_favorites (
+  review_id text not null references public.book_reviews(id) on delete cascade,
+  user_id text not null references public.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (review_id, user_id)
+);
+
 create table if not exists public.book_progress (
   book_id text not null references public.library_books(id) on delete cascade,
   user_id text not null references public.users(id) on delete cascade,
@@ -143,6 +150,15 @@ create table if not exists public.book_annotation_replies (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.book_annotation_reply_votes (
+  reply_id text not null references public.book_annotation_replies(id) on delete cascade,
+  user_id text not null references public.users(id) on delete cascade,
+  vote_type text not null check (vote_type in ('up', 'down')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (reply_id, user_id)
+);
+
 create table if not exists public.library_feedback (
   id text primary key,
   parent_id text references public.library_feedback(id) on delete cascade,
@@ -162,15 +178,20 @@ create table if not exists public.library_user_settings (
   notify_annotation_favorites boolean not null default true,
   notify_review_likes boolean not null default true,
   notify_feedback_replies boolean not null default true,
+  annotation_visibility_threshold smallint not null default 50 check (annotation_visibility_threshold between 0 and 100),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.library_user_settings
+  add column if not exists annotation_visibility_threshold smallint not null default 50
+  check (annotation_visibility_threshold between 0 and 100);
 
 create table if not exists public.library_notifications (
   id bigint generated always as identity primary key,
   user_id text not null references public.users(id) on delete cascade,
   actor_id text references public.users(id) on delete set null,
-  type text not null check (type in ('annotation_reply', 'annotation_like', 'annotation_favorite', 'review_like', 'feedback_reply', 'system')),
+  type text not null check (type in ('annotation_reply', 'annotation_like', 'annotation_favorite', 'review_like', 'review_favorite', 'feedback_reply', 'system')),
   book_id text references public.library_books(id) on delete cascade,
   target_type text not null check (target_type in ('annotation', 'review', 'feedback', 'system')),
   target_id text,
@@ -180,12 +201,16 @@ create table if not exists public.library_notifications (
   unique (user_id, type, actor_id, target_type, target_id)
 );
 
+alter table public.library_notifications drop constraint if exists library_notifications_type_check;
+alter table public.library_notifications add constraint library_notifications_type_check
+  check (type in ('annotation_reply', 'annotation_like', 'annotation_favorite', 'review_like', 'review_favorite', 'feedback_reply', 'system'));
+
 -- Small append-only deltas make reconnect catch-up deterministic without
 -- exposing full rows over Realtime. Old entries are pruned opportunistically.
 create table if not exists public.library_realtime_events (
   sequence_id bigint generated always as identity primary key,
   topic text not null,
-  resource text not null check (resource in ('notification', 'review', 'review_like', 'annotation', 'annotation_reply', 'annotation_vote', 'annotation_favorite')),
+  resource text not null check (resource in ('notification', 'review', 'review_like', 'review_favorite', 'annotation', 'annotation_reply', 'annotation_reply_vote', 'annotation_vote', 'annotation_favorite')),
   operation text not null check (operation in ('insert', 'update', 'delete')),
   target_id text,
   book_id text references public.library_books(id) on delete cascade,
@@ -197,16 +222,22 @@ create table if not exists public.library_realtime_events (
   )
 );
 
+alter table public.library_realtime_events drop constraint if exists library_realtime_events_resource_check;
+alter table public.library_realtime_events add constraint library_realtime_events_resource_check
+  check (resource in ('notification', 'review', 'review_like', 'review_favorite', 'annotation', 'annotation_reply', 'annotation_reply_vote', 'annotation_vote', 'annotation_favorite'));
+
 create index if not exists idx_library_books_category on public.library_books(category, enabled, catalog_order);
 create index if not exists idx_book_readers_book on public.book_readers(book_id);
 create index if not exists idx_book_ratings_book on public.book_ratings(book_id);
 create index if not exists idx_book_favorites_user on public.book_favorites(user_id, created_at desc);
 create index if not exists idx_book_reviews_book on public.book_reviews(book_id, created_at desc) where status = 'active';
 create index if not exists idx_book_reviews_author on public.book_reviews(author_id, updated_at desc) where status = 'active';
+create index if not exists idx_book_review_favorites_review on public.book_review_favorites(review_id);
 create index if not exists idx_book_progress_user on public.book_progress(user_id, updated_at desc);
 create index if not exists idx_book_annotations_render on public.book_annotations(book_id, chapter_href, created_at) where status = 'active';
 create index if not exists idx_book_annotation_favorites_user on public.book_annotation_favorites(user_id, created_at desc);
 create index if not exists idx_book_annotation_replies_annotation on public.book_annotation_replies(annotation_id, created_at) where status = 'active';
+create index if not exists idx_book_annotation_reply_votes_reply on public.book_annotation_reply_votes(reply_id);
 create index if not exists idx_library_feedback_thread on public.library_feedback(parent_id, created_at) where status = 'active';
 create index if not exists idx_library_notifications_user on public.library_notifications(user_id, read_at, created_at desc);
 create index if not exists idx_library_realtime_events_topic on public.library_realtime_events(topic, sequence_id);
@@ -249,7 +280,7 @@ begin
 
   insert into public.users as existing(id, google_sub, email, display_name, public_display_name, avatar_url, last_login_at, is_active, updated_at)
   values (v_uid, v_google_sub, v_email, v_name, v_name, v_avatar, now(), true, now())
-  on conflict (id) do update
+  on conflict on constraint users_pkey do update
     set email = excluded.email,
         avatar_url = coalesce(excluded.avatar_url, existing.avatar_url),
         last_login_at = now(),
@@ -360,8 +391,9 @@ begin
 end;
 $$;
 
-create or replace function public.get_library_review_like_stats(p_review_ids text[])
-returns table (review_id text, like_count bigint, viewer_liked boolean)
+drop function if exists public.get_library_review_like_stats(text[]);
+create function public.get_library_review_like_stats(p_review_ids text[])
+returns table (review_id text, like_count bigint, viewer_liked boolean, favorite_count bigint, viewer_favorite boolean)
 language plpgsql
 stable
 security definer
@@ -373,10 +405,13 @@ begin
   end if;
   return query
   select r.id,
-         count(l.user_id)::bigint,
-         coalesce(bool_or(l.user_id = auth.uid()::text), false)
+         count(distinct l.user_id)::bigint,
+         coalesce(bool_or(l.user_id = auth.uid()::text), false),
+         count(distinct f.user_id)::bigint,
+         coalesce(bool_or(f.user_id = auth.uid()::text), false)
   from public.book_reviews r
   left join public.book_review_likes l on l.review_id = r.id
+  left join public.book_review_favorites f on f.review_id = r.id
   where r.id = any(coalesce(p_review_ids, array[]::text[])) and r.status = 'active'
   group by r.id;
 end;
@@ -428,6 +463,32 @@ begin
     and a.status = 'active'
     and (a.visibility = 'public' or a.author_id = auth.uid()::text)
   group by a.id;
+end;
+$$;
+
+create or replace function public.get_library_annotation_reply_vote_stats(p_reply_ids text[])
+returns table (reply_id text, score bigint, viewer_vote text)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+  if coalesce(cardinality(p_reply_ids), 0) > 1000 then
+    raise exception 'TOO_MANY_REPLY_IDS';
+  end if;
+  return query
+  select r.id,
+         coalesce(sum(case when v.vote_type = 'up' then 1 when v.vote_type = 'down' then -1 else 0 end), 0)::bigint,
+         max(v.vote_type) filter (where v.user_id = auth.uid()::text)
+  from public.book_annotation_replies r
+  join public.book_annotations a on a.id = r.annotation_id
+  left join public.book_annotation_reply_votes v on v.reply_id = r.id
+  where r.id = any(coalesce(p_reply_ids, array[]::text[]))
+    and r.status = 'active'
+    and a.status = 'active'
+    and (a.visibility = 'public' or a.author_id = auth.uid()::text)
+  group by r.id;
 end;
 $$;
 
@@ -510,6 +571,13 @@ begin
     v_type := 'review_like';
     v_target_type := 'review';
     v_target_id := new.review_id;
+  elsif tg_table_name = 'book_review_favorites' then
+    select r.author_id, r.book_id into v_recipient, v_book_id
+    from public.book_reviews r where r.id = new.review_id and r.status = 'active';
+    v_actor := new.user_id;
+    v_type := 'review_favorite';
+    v_target_type := 'review';
+    v_target_id := new.review_id;
   elsif tg_table_name = 'library_feedback' then
     if new.parent_id is null then return new; end if;
     select f.author_id, f.book_id into v_recipient, v_book_id
@@ -529,6 +597,7 @@ begin
     when 'annotation_like' then s.notify_annotation_likes
     when 'annotation_favorite' then s.notify_annotation_favorites
     when 'review_like' then s.notify_review_likes
+    when 'review_favorite' then s.notify_review_likes
     when 'feedback_reply' then s.notify_feedback_replies
     else true end
   into v_allowed
@@ -544,6 +613,7 @@ begin
     when 'annotation_like' then format('%s 對你在《%s》的標注表示讚賞', v_actor_name, coalesce(v_book_title, '館藏'))
     when 'annotation_favorite' then format('%s 收藏了你在《%s》的標注', v_actor_name, coalesce(v_book_title, '館藏'))
     when 'review_like' then format('%s 喜歡你對《%s》的評論', v_actor_name, coalesce(v_book_title, '館藏'))
+    when 'review_favorite' then format('%s 收藏了你對《%s》的評論', v_actor_name, coalesce(v_book_title, '館藏'))
     when 'feedback_reply' then format('%s 回覆了你的讀者回饋', v_actor_name)
     else '你有一則新的館藏通知' end;
 
@@ -566,6 +636,9 @@ create trigger library_notify_annotation_favorite after insert on public.book_an
 for each row execute function public.create_library_activity_notification();
 drop trigger if exists library_notify_review_like on public.book_review_likes;
 create trigger library_notify_review_like after insert on public.book_review_likes
+for each row execute function public.create_library_activity_notification();
+drop trigger if exists library_notify_review_favorite on public.book_review_favorites;
+create trigger library_notify_review_favorite after insert on public.book_review_favorites
 for each row execute function public.create_library_activity_notification();
 drop trigger if exists library_notify_feedback_reply on public.library_feedback;
 create trigger library_notify_feedback_reply after insert on public.library_feedback
@@ -603,6 +676,10 @@ begin
     select r.book_id into v_book_id from public.book_reviews r where r.id = coalesce(new.review_id, old.review_id);
     v_resource := 'review_like';
     v_target_id := coalesce(new.review_id, old.review_id);
+  elsif tg_table_name = 'book_review_favorites' then
+    select r.book_id into v_book_id from public.book_reviews r where r.id = coalesce(new.review_id, old.review_id);
+    v_resource := 'review_favorite';
+    v_target_id := coalesce(new.review_id, old.review_id);
   elsif tg_table_name = 'book_annotations' then
     v_book_id := coalesce(new.book_id, old.book_id);
     v_resource := 'annotation';
@@ -618,12 +695,32 @@ begin
     end if;
     v_resource := 'annotation_reply';
     v_target_id := coalesce(new.annotation_id, old.annotation_id);
+  elsif tg_table_name = 'book_annotation_reply_votes' then
+    select a.book_id, a.visibility into v_book_id, v_visibility
+    from public.book_annotation_replies r join public.book_annotations a on a.id = r.annotation_id
+    where r.id = coalesce(new.reply_id, old.reply_id);
+    if v_visibility = 'private' then
+      if tg_op = 'DELETE' then return old; end if;
+      return new;
+    end if;
+    v_resource := 'annotation_reply_vote';
+    v_target_id := coalesce(new.reply_id, old.reply_id);
   elsif tg_table_name = 'book_annotation_votes' then
-    select a.book_id into v_book_id from public.book_annotations a where a.id = coalesce(new.annotation_id, old.annotation_id);
+    select a.book_id, a.visibility into v_book_id, v_visibility
+    from public.book_annotations a where a.id = coalesce(new.annotation_id, old.annotation_id);
+    if v_visibility = 'private' then
+      if tg_op = 'DELETE' then return old; end if;
+      return new;
+    end if;
     v_resource := 'annotation_vote';
     v_target_id := coalesce(new.annotation_id, old.annotation_id);
   elsif tg_table_name = 'book_annotation_favorites' then
-    select a.book_id into v_book_id from public.book_annotations a where a.id = coalesce(new.annotation_id, old.annotation_id);
+    select a.book_id, a.visibility into v_book_id, v_visibility
+    from public.book_annotations a where a.id = coalesce(new.annotation_id, old.annotation_id);
+    if v_visibility = 'private' then
+      if tg_op = 'DELETE' then return old; end if;
+      return new;
+    end if;
     v_resource := 'annotation_favorite';
     v_target_id := coalesce(new.annotation_id, old.annotation_id);
   else
@@ -673,11 +770,17 @@ for each row execute function public.broadcast_library_realtime_event();
 drop trigger if exists library_realtime_review_likes on public.book_review_likes;
 create trigger library_realtime_review_likes after insert or delete on public.book_review_likes
 for each row execute function public.broadcast_library_realtime_event();
+drop trigger if exists library_realtime_review_favorites on public.book_review_favorites;
+create trigger library_realtime_review_favorites after insert or delete on public.book_review_favorites
+for each row execute function public.broadcast_library_realtime_event();
 drop trigger if exists library_realtime_annotations on public.book_annotations;
 create trigger library_realtime_annotations after insert or update or delete on public.book_annotations
 for each row execute function public.broadcast_library_realtime_event();
 drop trigger if exists library_realtime_annotation_replies on public.book_annotation_replies;
 create trigger library_realtime_annotation_replies after insert or update or delete on public.book_annotation_replies
+for each row execute function public.broadcast_library_realtime_event();
+drop trigger if exists library_realtime_annotation_reply_votes on public.book_annotation_reply_votes;
+create trigger library_realtime_annotation_reply_votes after insert or update or delete on public.book_annotation_reply_votes
 for each row execute function public.broadcast_library_realtime_event();
 drop trigger if exists library_realtime_annotation_votes on public.book_annotation_votes;
 create trigger library_realtime_annotation_votes after insert or update or delete on public.book_annotation_votes
@@ -693,11 +796,13 @@ alter table public.book_ratings enable row level security;
 alter table public.book_favorites enable row level security;
 alter table public.book_reviews enable row level security;
 alter table public.book_review_likes enable row level security;
+alter table public.book_review_favorites enable row level security;
 alter table public.book_progress enable row level security;
 alter table public.book_annotations enable row level security;
 alter table public.book_annotation_votes enable row level security;
 alter table public.book_annotation_favorites enable row level security;
 alter table public.book_annotation_replies enable row level security;
+alter table public.book_annotation_reply_votes enable row level security;
 alter table public.library_feedback enable row level security;
 alter table public.library_user_settings enable row level security;
 alter table public.library_notifications enable row level security;
@@ -707,8 +812,8 @@ alter table public.library_realtime_events enable row level security;
 -- roles may create authorization policies there, but cannot ALTER the table.
 
 revoke all on public.library_books, public.book_readers, public.book_ratings, public.book_favorites,
-  public.book_reviews, public.book_review_likes, public.book_progress, public.book_annotations,
-  public.book_annotation_votes, public.book_annotation_favorites, public.book_annotation_replies,
+  public.book_reviews, public.book_review_likes, public.book_review_favorites, public.book_progress, public.book_annotations,
+  public.book_annotation_votes, public.book_annotation_favorites, public.book_annotation_replies, public.book_annotation_reply_votes,
   public.library_feedback, public.library_user_settings, public.library_notifications,
   public.library_realtime_events from anon, authenticated;
 
@@ -767,6 +872,18 @@ create policy book_review_likes_own_insert on public.book_review_likes for inser
 create policy book_review_likes_own_delete on public.book_review_likes for delete to authenticated
   using (user_id = auth.uid()::text and public.library_user_is_active());
 
+drop policy if exists book_review_favorites_own_read on public.book_review_favorites;
+drop policy if exists book_review_favorites_own_insert on public.book_review_favorites;
+drop policy if exists book_review_favorites_own_delete on public.book_review_favorites;
+create policy book_review_favorites_own_read on public.book_review_favorites for select to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active());
+create policy book_review_favorites_own_insert on public.book_review_favorites for insert to authenticated
+  with check (user_id = auth.uid()::text and public.library_user_is_active() and exists (
+    select 1 from public.book_reviews r where r.id = book_review_favorites.review_id and r.status = 'active'
+  ));
+create policy book_review_favorites_own_delete on public.book_review_favorites for delete to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active());
+
 drop policy if exists book_progress_own_read on public.book_progress;
 drop policy if exists book_progress_own_insert on public.book_progress;
 drop policy if exists book_progress_own_update on public.book_progress;
@@ -794,9 +911,12 @@ create policy book_annotations_own_update on public.book_annotations for update 
 create policy book_annotations_own_delete on public.book_annotations for delete to authenticated
   using (author_id = auth.uid()::text and public.library_user_is_active());
 
+drop policy if exists book_annotation_votes_own_read on public.book_annotation_votes;
 drop policy if exists book_annotation_votes_own_insert on public.book_annotation_votes;
 drop policy if exists book_annotation_votes_own_update on public.book_annotation_votes;
 drop policy if exists book_annotation_votes_own_delete on public.book_annotation_votes;
+create policy book_annotation_votes_own_read on public.book_annotation_votes for select to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active());
 create policy book_annotation_votes_own_insert on public.book_annotation_votes for insert to authenticated
   with check (user_id = auth.uid()::text and public.library_user_is_active() and exists (
     select 1 from public.book_annotations a where a.id = book_annotation_votes.annotation_id and a.status = 'active'
@@ -840,6 +960,24 @@ create policy book_annotation_replies_own_update on public.book_annotation_repli
   with check (author_id = auth.uid()::text and status in ('active', 'deleted') and public.library_user_is_active());
 create policy book_annotation_replies_own_delete on public.book_annotation_replies for delete to authenticated
   using (author_id = auth.uid()::text and public.library_user_is_active());
+
+drop policy if exists book_annotation_reply_votes_own_read on public.book_annotation_reply_votes;
+drop policy if exists book_annotation_reply_votes_own_insert on public.book_annotation_reply_votes;
+drop policy if exists book_annotation_reply_votes_own_update on public.book_annotation_reply_votes;
+drop policy if exists book_annotation_reply_votes_own_delete on public.book_annotation_reply_votes;
+create policy book_annotation_reply_votes_own_read on public.book_annotation_reply_votes for select to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active());
+create policy book_annotation_reply_votes_own_insert on public.book_annotation_reply_votes for insert to authenticated
+  with check (user_id = auth.uid()::text and public.library_user_is_active() and exists (
+    select 1 from public.book_annotation_replies r join public.book_annotations a on a.id = r.annotation_id
+    where r.id = book_annotation_reply_votes.reply_id and r.status = 'active' and a.status = 'active'
+      and (a.visibility = 'public' or a.author_id = auth.uid()::text)
+  ));
+create policy book_annotation_reply_votes_own_update on public.book_annotation_reply_votes for update to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active())
+  with check (user_id = auth.uid()::text and public.library_user_is_active());
+create policy book_annotation_reply_votes_own_delete on public.book_annotation_reply_votes for delete to authenticated
+  using (user_id = auth.uid()::text and public.library_user_is_active());
 
 drop policy if exists library_feedback_public_read on public.library_feedback;
 drop policy if exists library_feedback_own_insert on public.library_feedback;
@@ -907,6 +1045,8 @@ grant update (content, status, updated_at) on public.book_reviews to authenticat
 grant delete on public.book_reviews to authenticated;
 grant select, delete on public.book_review_likes to authenticated;
 grant insert (review_id, user_id) on public.book_review_likes to authenticated;
+grant select, delete on public.book_review_favorites to authenticated;
+grant insert (review_id, user_id) on public.book_review_favorites to authenticated;
 grant select on public.book_progress to authenticated;
 grant insert (book_id, user_id, cfi, chapter_href, percentage, updated_at) on public.book_progress to authenticated;
 grant update (cfi, chapter_href, percentage, updated_at) on public.book_progress to authenticated;
@@ -914,7 +1054,7 @@ grant select on public.book_annotations to anon, authenticated;
 grant insert (id, book_id, author_id, chapter_href, cfi_range, quote, content, visibility) on public.book_annotations to authenticated;
 grant update (content, visibility, status, updated_at) on public.book_annotations to authenticated;
 grant delete on public.book_annotations to authenticated;
-grant delete on public.book_annotation_votes to authenticated;
+grant select, delete on public.book_annotation_votes to authenticated;
 grant insert (annotation_id, user_id, vote_type, updated_at) on public.book_annotation_votes to authenticated;
 grant update (vote_type, updated_at) on public.book_annotation_votes to authenticated;
 grant select, delete on public.book_annotation_favorites to authenticated;
@@ -923,13 +1063,16 @@ grant select on public.book_annotation_replies to anon, authenticated;
 grant insert (id, annotation_id, author_id, content) on public.book_annotation_replies to authenticated;
 grant update (content, status, updated_at) on public.book_annotation_replies to authenticated;
 grant delete on public.book_annotation_replies to authenticated;
+grant select, delete on public.book_annotation_reply_votes to authenticated;
+grant insert (reply_id, user_id, vote_type, updated_at) on public.book_annotation_reply_votes to authenticated;
+grant update (vote_type, updated_at) on public.book_annotation_reply_votes to authenticated;
 grant select on public.library_feedback to anon, authenticated;
 grant insert (id, parent_id, author_id, book_id, subject, content) on public.library_feedback to authenticated;
 grant select on public.library_user_settings, public.library_notifications to authenticated;
 grant select on public.library_realtime_events to anon, authenticated;
 grant insert (user_id) on public.library_user_settings to authenticated;
 grant update (notify_annotation_replies, notify_annotation_likes, notify_annotation_favorites,
-  notify_review_likes, notify_feedback_replies, updated_at) on public.library_user_settings to authenticated;
+  notify_review_likes, notify_feedback_replies, annotation_visibility_threshold, updated_at) on public.library_user_settings to authenticated;
 grant update (read_at) on public.library_notifications to authenticated;
 grant delete on public.library_notifications to authenticated;
 
@@ -941,6 +1084,7 @@ revoke all on function public.get_book_public_metrics(text[]) from public, anon,
 revoke all on function public.get_library_review_like_stats(text[]) from public, anon, authenticated;
 revoke all on function public.get_library_annotation_favorite_stats(text[]) from public, anon, authenticated;
 revoke all on function public.get_library_annotation_vote_stats(text[]) from public, anon, authenticated;
+revoke all on function public.get_library_annotation_reply_vote_stats(text[]) from public, anon, authenticated;
 revoke all on function public.record_book_open(text, text) from public, anon, authenticated;
 revoke all on function public.create_library_activity_notification() from public, anon, authenticated;
 revoke all on function public.broadcast_library_realtime_event() from public, anon, authenticated;
@@ -952,6 +1096,7 @@ grant execute on function public.get_book_public_metrics(text[]) to anon, authen
 grant execute on function public.get_library_review_like_stats(text[]) to anon, authenticated;
 grant execute on function public.get_library_annotation_favorite_stats(text[]) to anon, authenticated;
 grant execute on function public.get_library_annotation_vote_stats(text[]) to anon, authenticated;
+grant execute on function public.get_library_annotation_reply_vote_stats(text[]) to anon, authenticated;
 grant execute on function public.record_book_open(text, text) to anon, authenticated;
 
 commit;

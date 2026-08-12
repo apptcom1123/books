@@ -20,7 +20,7 @@
       <span class="brand-mark">謎</span>
       <span><strong>謎讀</strong><small>Mystery Commons</small></span>
     </a>
-    <nav class="top-nav" aria-label="書房導覽"><a href="/">探索館藏</a><a href="/account.html" aria-current="page">我的書房</a></nav>
+    <nav class="top-nav" aria-label="書房導覽"><a href="/">探索館藏</a><a href="/feedback.html">讀者回饋</a><a href="/account.html" aria-current="page">我的書房</a></nav>
     <button id="account-logout" class="button button-quiet" type="button" hidden>登出</button>
   </header>
 
@@ -69,6 +69,7 @@
       <section class="account-panel" data-account-panel="activity" hidden>
         <div class="panel-title"><div><p class="eyebrow">YOUR MARGINALIA</p><h2>評論與標注</h2></div></div>
         <h3>我的書評</h3><div id="my-reviews" class="activity-list"></div>
+        <h3 class="subsection-title">收藏的讀者評論</h3><div id="saved-reviews" class="activity-list"></div>
         <h3 class="subsection-title">我的標注</h3><div id="my-annotations" class="activity-list"></div>
         <h3 class="subsection-title">我的回覆</h3><div id="my-replies" class="activity-list"></div>
         <h3 class="subsection-title">收藏的公開標注</h3><div id="saved-annotations" class="activity-list"></div>
@@ -95,8 +96,9 @@
             <label class="toggle-row"><span><strong>標注收到回覆</strong><small>有人接續你的推論或問題</small></span><input id="notify-annotation-replies" type="checkbox"></label>
             <label class="toggle-row"><span><strong>標注收到讚賞</strong><small>有人對你的公開標注按讚</small></span><input id="notify-annotation-likes" type="checkbox"></label>
             <label class="toggle-row"><span><strong>標注被收藏</strong><small>有人把你的公開標注收入書房</small></span><input id="notify-annotation-favorites" type="checkbox"></label>
-            <label class="toggle-row"><span><strong>書評收到讚賞</strong><small>有人喜歡你的書籍評論</small></span><input id="notify-review-likes" type="checkbox"></label>
+            <label class="toggle-row"><span><strong>書評收到互動</strong><small>有人讚賞或收藏你的書籍評論</small></span><input id="notify-review-likes" type="checkbox"></label>
             <label class="toggle-row"><span><strong>讀者回饋收到回覆</strong><small>館員或其他讀者回覆你的建議</small></span><input id="notify-feedback-replies" type="checkbox"></label>
+            <label class="threshold-row"><span><strong>公開標注泡泡閾值</strong><small>數值越高，閱讀時只顯示排序更前面的泡泡</small></span><output id="account-threshold-output">50%</output><input id="account-annotation-threshold" type="range" min="0" max="100" step="10" value="50"></label>
             <button class="button button-dark" type="submit">儲存通知設定</button>
           </form>
         </div>

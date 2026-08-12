@@ -10,6 +10,7 @@ function settingsPayload(row) {
     notifyAnnotationFavorites: Boolean(row.notify_annotation_favorites),
     notifyReviewLikes: Boolean(row.notify_review_likes),
     notifyFeedbackReplies: Boolean(row.notify_feedback_replies),
+    annotationVisibilityThreshold: Number(row.annotation_visibility_threshold ?? 50),
   };
 }
 
@@ -43,6 +44,14 @@ router.get("/", async (req, res, next) => {
 router.get("/summary", async (req, res, next) => {
   try {
     res.json(await req.repositories.user.notificationSummary(req.user.userId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/settings", async (req, res, next) => {
+  try {
+    res.json({ settings: settingsPayload(await req.repositories.user.settings(req.user.userId)) });
   } catch (error) {
     next(error);
   }

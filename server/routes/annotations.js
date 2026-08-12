@@ -75,9 +75,27 @@ router.delete("/annotation-replies/:replyId", requireAuth, async (req, res, next
   }
 });
 
+router.post("/annotation-replies/:replyId/vote", requireAuth, async (req, res, next) => {
+  try {
+    const annotation = await req.repositories.library.voteAnnotationReply(req.params.replyId, req.user.userId, req.body?.voteType);
+    res.json({ annotation });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/reviews/:reviewId/like", requireAuth, async (req, res, next) => {
   try {
     const review = await req.repositories.library.toggleReviewLike(req.params.reviewId, req.user.userId);
+    res.json({ review });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/reviews/:reviewId/favorite", requireAuth, async (req, res, next) => {
+  try {
+    const review = await req.repositories.library.toggleReviewFavorite(req.params.reviewId, req.user.userId);
     res.json({ review });
   } catch (error) {
     next(error);

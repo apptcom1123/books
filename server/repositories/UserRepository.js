@@ -46,10 +46,17 @@ export class UserRepository {
     };
     const payload = { updated_at: new Date().toISOString() };
     for (const [key, value] of Object.entries(input || {})) {
-      if (!map[key] || typeof value !== "boolean") {
+      if (key === "annotationVisibilityThreshold") {
+        const threshold = Number(value);
+        if (!Number.isInteger(threshold) || threshold < 0 || threshold > 100) {
+          throw Object.assign(new Error("INVALID_SETTING"), { status: 400 });
+        }
+        payload.annotation_visibility_threshold = threshold;
+      } else if (!map[key] || typeof value !== "boolean") {
         throw Object.assign(new Error("INVALID_SETTING"), { status: 400 });
+      } else {
+        payload[map[key]] = value;
       }
-      payload[map[key]] = value;
     }
     const { data, error } = await this.db.from("library_user_settings").update(payload)
       .eq("user_id", userId).select("*").single();

@@ -48,6 +48,7 @@
     <div><span>字級</span><button id="font-smaller" type="button">A−</button><button id="font-larger" type="button">A＋</button></div>
     <label>主題<select id="theme-select"><option value="publisher">原書排版</option><option value="paper">紙張舒適</option><option value="night">夜間閱讀</option></select></label>
     <label>跨頁<select id="spread-select"><option value="auto">自動</option><option value="none">單頁</option></select></label>
+    <label class="threshold-setting"><span>公開泡泡顯示閾值 <output id="annotation-threshold-output">50%</output></span><input id="annotation-threshold" type="range" min="0" max="100" step="10" value="50"><small>數值越高，只顯示排序越前面的公開標注；私人標注永遠顯示。</small></label>
   </section>
 
   <footer class="reader-footer">
@@ -64,6 +65,16 @@
       <label class="visibility-label"><input id="annotation-public" type="checkbox" checked><span>公開給所有讀者</span></label>
       <div class="dialog-actions"><button class="quiet" type="button" data-dialog-close="annotation-dialog">取消</button><button id="annotation-submit" class="primary" type="submit">儲存標注</button></div>
     </form>
+  </dialog>
+
+  <button id="selection-action" class="selection-action" type="button" hidden>＋ 增加標注</button>
+
+  <dialog id="annotation-thread-dialog" class="annotation-thread-dialog">
+    <div class="annotation-thread-shell">
+      <div class="dialog-head"><div><small>ANNOTATION THREAD</small><h2>標注與討論</h2></div><button type="button" data-dialog-close="annotation-thread-dialog" aria-label="關閉">×</button></div>
+      <p id="annotation-thread-rank" class="annotation-thread-rank"></p>
+      <div id="annotation-thread-content" class="annotation-thread-content"></div>
+    </div>
   </dialog>
 
   <div id="reader-toast" class="reader-toast" aria-live="polite"></div>

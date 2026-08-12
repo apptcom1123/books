@@ -21,7 +21,7 @@
     </a>
     <nav class="top-nav" aria-label="主要導覽">
       <a href="#collection">探索館藏</a>
-      <a href="#feedback">讀者回饋</a>
+      <a href="/feedback.html">讀者回饋</a>
       <button id="favorites-filter" class="nav-button" type="button">我的收藏</button>
       <a href="/account.html">我的書房</a>
     </nav>
@@ -87,20 +87,19 @@
       </div>
     </section>
 
-    <section class="source-note">
-      <div><span class="source-monogram">SE</span><h3>Standard Ebooks</h3><p>細緻校對、現代排版與完整 metadata 的公版版本。</p></div>
-      <div><span class="source-monogram">PG</span><h3>Project Gutenberg</h3><p>由志工維護、長期開放取用的經典電子書典藏。</p></div>
-      <p class="rights-copy">館藏會保存來源與權利檢查紀錄；公版判斷具有地域性，權利狀態有疑義的作品不得上架。</p>
-    </section>
-
-    <section id="feedback" class="feedback-section">
-      <div class="feedback-intro">
-        <p class="eyebrow">READERS' DESK</p>
-        <h2>讀者回饋桌</h2>
-        <p>缺書、排版問題、功能建議，或只是想談談剛讀完的謎題，都可以留在這裡。管理者與其他讀者能直接回覆。</p>
-        <button id="new-feedback-button" class="button button-accent" type="button">提出一則建議</button>
+    <section id="source-info" class="source-landscape" aria-label="館藏來源與權利說明">
+      <article class="source-mountain source-mountain-se">
+        <span class="source-monogram">SE</span>
+        <div><h3>Standard Ebooks</h3><p>細緻校對、現代排版與完整 metadata 的公版版本。</p></div>
+      </article>
+      <article class="source-mountain source-mountain-pg">
+        <span class="source-monogram">PG</span>
+        <div><h3>Project Gutenberg</h3><p>由志工維護、長期開放取用的經典電子書典藏。</p></div>
+      </article>
+      <div class="rights-ridge">
+        <p>館藏會保存來源與權利檢查紀錄；公版判斷具有地域性，權利狀態有疑義的作品不得上架。</p>
+        <a href="/feedback.html">前往讀者回饋 →</a>
       </div>
-      <div id="feedback-list" class="feedback-list"><p class="muted">正在取回留言…</p></div>
     </section>
   </main>
 
@@ -109,16 +108,6 @@
     <p>電子書取自 Standard Ebooks 與 Project Gutenberg。網站的中文短介為檢索輔助，不取代原出版資訊。</p>
     <a href="/about.html">館藏、權利與隱私說明</a>
   </footer>
-
-  <dialog id="feedback-dialog" class="dialog">
-    <form id="feedback-form" method="dialog">
-      <div class="dialog-head"><div><p class="eyebrow">READERS' DESK</p><h2 id="feedback-dialog-title">提出建議</h2></div><button class="icon-close" type="button" data-dialog-close="feedback-dialog" aria-label="關閉">×</button></div>
-      <input id="feedback-parent" type="hidden">
-      <label id="feedback-subject-wrap">主旨<input id="feedback-subject" maxlength="100" placeholder="例如：希望加入更多密室推理"></label>
-      <label>內容<textarea id="feedback-content" maxlength="2000" rows="6" required placeholder="請描述你的想法或遇到的問題…"></textarea></label>
-      <div class="dialog-actions"><button class="button button-quiet" type="button" data-dialog-close="feedback-dialog">取消</button><button id="feedback-submit" class="button button-dark" type="submit">送出</button></div>
-    </form>
-  </dialog>
 
   <dialog id="review-dialog" class="dialog review-dialog">
     <div class="review-dialog-shell">

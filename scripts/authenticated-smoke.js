@@ -41,6 +41,7 @@ let originalRating = 0;
 let favoriteToggled = false;
 let settingsChanged = false;
 let originalReviewLikes = null;
+let originalAnnotationThreshold = null;
 let reviewId = null;
 let deletedReviewId = null;
 let annotationId = null;
@@ -57,8 +58,11 @@ async function cleanup() {
   if (reviewId) jobs.push(() => remove(`/reviews/${reviewId}`));
   if (selectedBook && favoriteToggled) jobs.push(() => post(`/books/${selectedBook.id}/favorite`));
   if (selectedBook) jobs.push(() => put(`/books/${selectedBook.id}/rating`, { rating: originalRating }));
-  if (settingsChanged && originalReviewLikes !== null) {
-    jobs.push(() => patch("/me/settings", { notifyReviewLikes: originalReviewLikes }));
+  if (settingsChanged && originalReviewLikes !== null && originalAnnotationThreshold !== null) {
+    jobs.push(() => patch("/me/settings", {
+      notifyReviewLikes: originalReviewLikes,
+      annotationVisibilityThreshold: originalAnnotationThreshold,
+    }));
   }
   for (const job of jobs) {
     try { await job(); } catch (error) { console.error(`Cleanup warning: ${error.message}`); }
@@ -81,12 +85,21 @@ try {
   originalRating = Number(selectedBook.viewer?.rating || 0);
 
   originalReviewLikes = Boolean(account.settings.notifyReviewLikes);
-  await patch("/me/settings", { notifyReviewLikes: !originalReviewLikes });
+  originalAnnotationThreshold = Number(account.settings.annotationVisibilityThreshold ?? 50);
+  const testThreshold = originalAnnotationThreshold === 65 ? 60 : 65;
+  await patch("/me/settings", {
+    notifyReviewLikes: !originalReviewLikes,
+    annotationVisibilityThreshold: testThreshold,
+  });
   settingsChanged = true;
-  const restoredSettings = await patch("/me/settings", { notifyReviewLikes: originalReviewLikes });
+  const restoredSettings = await patch("/me/settings", {
+    notifyReviewLikes: originalReviewLikes,
+    annotationVisibilityThreshold: originalAnnotationThreshold,
+  });
   settingsChanged = false;
   check(restoredSettings.settings.notifyReviewLikes === originalReviewLikes, "Notification setting was not restored.");
-  console.log("OK notification preference update and restore");
+  check(restoredSettings.settings.annotationVisibilityThreshold === originalAnnotationThreshold, "Annotation threshold was not restored.");
+  console.log("OK notification and annotation threshold settings update and restore");
 
   const favorite = await post(`/books/${selectedBook.id}/favorite`);
   favoriteToggled = true;
@@ -112,11 +125,15 @@ try {
   check(liked.review?.viewerLiked === true, "Review like did not toggle on.");
   const unliked = await post(`/reviews/${reviewId}/like`);
   check(unliked.review?.viewerLiked === false, "Review like did not toggle off.");
+  const reviewSaved = await post(`/reviews/${reviewId}/favorite`);
+  check(reviewSaved.review?.viewerFavorite === true, "Review favorite did not toggle on.");
+  const reviewUnsaved = await post(`/reviews/${reviewId}/favorite`);
+  check(reviewUnsaved.review?.viewerFavorite === false, "Review favorite did not toggle off.");
   await remove(`/reviews/${reviewId}`);
   deletedReviewId = reviewId;
   reviewId = null;
   await put(`/books/${selectedBook.id}/rating`, { rating: originalRating });
-  console.log("OK review create, edit, like, unlike and delete");
+  console.log("OK review create, edit, like, save, restore and delete");
 
   const annotationCreated = await post(`/books/${selectedBook.id}/annotations`, {
     chapterHref: "smoke-test.xhtml",
@@ -139,11 +156,17 @@ try {
   const ownReply = replied.annotation?.replies?.find((reply) => reply.isOwner && reply.content === `${marker}-reply`);
   replyId = ownReply?.id || null;
   check(replyId, "Annotation reply was not created.");
+  const replyVoted = await post(`/annotation-replies/${replyId}/vote`, { voteType: "up" });
+  const votedReply = replyVoted.annotation?.replies?.find((reply) => reply.id === replyId);
+  check(votedReply?.viewerVote === "up", "Annotation reply vote did not toggle on.");
+  const replyVoteRestored = await post(`/annotation-replies/${replyId}/vote`, { voteType: "none" });
+  const restoredReply = replyVoteRestored.annotation?.replies?.find((reply) => reply.id === replyId);
+  check(!restoredReply?.viewerVote, "Annotation reply vote did not restore.");
   await remove(`/annotation-replies/${replyId}`);
   replyId = null;
   await remove(`/annotations/${annotationId}`);
   annotationId = null;
-  console.log("OK annotation create, edit, vote, save, reply and delete");
+  console.log("OK annotation create, edit, vote, save, reply vote and delete");
 
   const finalAccount = await get("/me");
   check(!(finalAccount.reviews || []).some((review) => review.id === deletedReviewId), "Temporary review remains active.");
