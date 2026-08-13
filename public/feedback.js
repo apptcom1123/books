@@ -60,7 +60,9 @@ function requireLogin() {
 function threadRows(rootId) {
   return feedbackState.messages
     .filter((message) => message.parent_id === rootId)
-    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    .sort((a, b) => Number(b.score || 0) - Number(a.score || 0)
+      || Number(b.upCount || 0) - Number(a.upCount || 0)
+      || new Date(b.created_at) - new Date(a.created_at));
 }
 
 function rebuildThreads() {
@@ -86,7 +88,7 @@ function renderFeedback() {
   feedbackElements.loadMore.disabled = feedbackState.loading;
   feedbackElements.loadMore.textContent = feedbackState.loading ? "正在載入…" : "載入更多討論";
   feedbackElements.list.innerHTML = threads.map((thread) => {
-    const latest = thread.replies.at(-1);
+    const latest = [...thread.replies].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).at(-1);
     const preview = latest?.content || thread.latestReplyContent || thread.content;
     const replyCount = thread.repliesLoaded ? thread.replies.length : Number(thread.replyCount || 0);
     return `<button class="feedback-card" type="button" data-thread-id="${thread.id}">
@@ -107,12 +109,12 @@ function messageMarkup(message, { root = false } = {}) {
   const downCount = Number(message.downCount) || 0;
   const pending = feedbackState.votePending.has(message.id);
   const deletePending = feedbackState.deletePending.has(message.id);
-  return `<article class="thread-message${root ? " root" : ""}" data-feedback-message="${escapeHtml(message.id)}">
+  return `<article class="thread-message${root ? " root" : ""}" data-feedback-message="${escapeHtml(message.id)}" data-social-key="feedback:${escapeHtml(message.id)}">
     <div class="feedback-message-layout">
-      <div class="feedback-vote-rail" role="group" aria-label="這則${root ? "討論" : "回覆"}的評價">
-        <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" aria-label="讚賞，目前 ${upCount} 票" ${pending ? "disabled" : ""}>▲</button>
-        <strong aria-label="淨分 ${score}">${feedbackVoteScoreContent(message.id, score)}</strong>
-        <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" aria-label="不讚同，目前 ${downCount} 票" ${pending ? "disabled" : ""}>▼</button>
+      <div class="social-vote-rail" role="group" aria-label="這則${root ? "討論" : "回覆"}的評價">
+        <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="social-vote-button ${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" aria-label="讚賞，目前 ${upCount} 票" ${pending ? "disabled" : ""}>▲</button>
+        ${feedbackVoteScoreContent(message.id, score)}
+        <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="social-vote-button down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" aria-label="不讚同，目前 ${downCount} 票" ${pending ? "disabled" : ""}>▼</button>
       </div>
       <div class="feedback-message-body"><header><img src="${escapeHtml(safeAvatar(message.author))}" alt=""><div><strong>${escapeHtml(message.author?.public_display_name || "讀者")}</strong><time>${new Date(message.created_at).toLocaleString("zh-TW")}</time></div>${roleBadge(message.author)}</header>
       <p>${escapeHtml(message.content)}</p></div>
@@ -134,10 +136,10 @@ function feedbackSignedScore(score) {
 function feedbackVoteScoreContent(id, score) {
   const animation = feedbackState.voteAnimations.get(id);
   feedbackState.voteAnimations.delete(id);
-  if (!animation || animation.from === animation.to) return feedbackSignedScore(score);
-  const direction = animation.to > animation.from ? "up" : "down";
-  const values = direction === "up" ? [animation.from, animation.to] : [animation.to, animation.from];
-  return `<span class="vote-score-window" aria-hidden="true"><span class="vote-score-track ${direction}"><span>${feedbackSignedScore(values[0])}</span><span>${feedbackSignedScore(values[1])}</span></span></span>`;
+  const attributes = animation && animation.from !== animation.to
+    ? ` data-score-from="${animation.from}" data-score-to="${animation.to}"`
+    : "";
+  return `<strong class="social-vote-score" aria-label="淨分 ${feedbackSignedScore(score)}"${attributes}>${feedbackSignedScore(score)}</strong>`;
 }
 
 function replaceFeedbackMessage(updated) {
@@ -220,7 +222,7 @@ async function toggleFeedbackVote(feedbackId, voteType) {
     window.libraryUX?.recordRollback?.("feedback-vote", error.code);
     toast(error.message, "error");
   } finally {
-    const remaining = 430 - (performance.now() - animationStartedAt);
+    const remaining = 1000 - (performance.now() - animationStartedAt);
     if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     feedbackState.votePending.delete(feedbackId);
     renderFeedbackViews();
@@ -230,11 +232,14 @@ async function toggleFeedbackVote(feedbackId, voteType) {
 function showThread(thread) {
   const replyCount = thread.repliesLoaded ? thread.replies.length : Number(thread.replyCount || 0);
   const scrollTop = feedbackElements.threadContent.scrollTop;
+  const previousPositions = window.librarySocialMotion?.capturePositions(feedbackElements.threadContent);
   const expanded = feedbackState.expandedThreads.has(thread.id);
   const compact = window.matchMedia("(max-width: 580px)").matches && !expanded && thread.replies.length > 2;
-  const visibleReplies = compact ? thread.replies.slice(-2) : thread.replies;
+  const visibleReplies = compact ? thread.replies.slice(0, 2) : thread.replies;
   feedbackElements.threadContent.innerHTML = `<p class="eyebrow">READER CONVERSATION</p><h2>${escapeHtml(thread.subject || "讀者建議")}</h2>${messageMarkup(thread, { root: true })}<div class="thread-divider"><span>${replyCount} 則回覆</span></div><div class="thread-replies">${visibleReplies.map((reply) => messageMarkup(reply)).join("") || '<p class="thread-no-replies">尚未有人回覆，成為第一位加入討論的讀者。</p>'}</div>${thread.replies.length > 2 && window.matchMedia("(max-width: 580px)").matches ? `<button class="thread-replies-toggle" type="button" data-feedback-replies-toggle="${thread.id}" aria-expanded="${expanded}">${expanded ? "收起回覆" : `查看全部 ${thread.replies.length} 則回覆`}</button>` : ""}`;
   feedbackElements.threadContent.scrollTop = scrollTop;
+  window.librarySocialMotion?.animateScores(feedbackElements.threadContent);
+  window.librarySocialMotion?.animateCardSwap(feedbackElements.threadContent, previousPositions);
   feedbackElements.replyForm.hidden = !window.libraryAuth.user;
 }
 
@@ -409,7 +414,7 @@ function syncFeedbackRealtime() {
       const ids = [...feedbackState.refreshThreadIds];
       feedbackState.refreshThreadIds.clear();
       refreshFeedbackThreads(ids);
-    }, feedbackState.votePending.size ? 520 : 280);
+    }, feedbackState.votePending.size ? 1050 : 280);
   });
 }
 

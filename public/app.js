@@ -21,6 +21,7 @@ const state = {
   ratingPending: new Set(),
   favoritePending: new Set(),
   reviewMutationPending: new Set(),
+  reviewLikeAnimations: new Map(),
   reviewPrefetched: new Set(),
 };
 
@@ -406,20 +407,58 @@ function avatarFor(user) {
   return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#dbe2d8"/><text x="32" y="40" text-anchor="middle" font-size="27" fill="#233d32">${initial}</text></svg>`)}`;
 }
 
+function queueReviewLikeAnimation(reviewId, fromCount, toCount) {
+  const from = Number(fromCount) || 0;
+  const to = Number(toCount) || 0;
+  if (from !== to) state.reviewLikeAnimations.set(reviewId, { from, to });
+}
+
+function reviewLikeCountContent(review) {
+  const animation = state.reviewLikeAnimations.get(review.id);
+  state.reviewLikeAnimations.delete(review.id);
+  const attributes = animation && animation.from !== animation.to
+    ? ` data-score-from="${animation.from}" data-score-to="${animation.to}"`
+    : "";
+  return `<strong class="social-vote-score" data-score-signed="false" aria-label="${Number(review.likeCount) || 0} 人讚賞"${attributes}>${Number(review.likeCount) || 0}</strong>`;
+}
+
+function applyReviewSnapshot(reviews = []) {
+  const previous = new Map(state.reviews.map((review) => [review.id, review]));
+  for (const review of reviews) {
+    const former = previous.get(review.id);
+    if (former) queueReviewLikeAnimation(review.id, former.likeCount, review.likeCount);
+  }
+  state.reviews = reviews;
+}
+
 function renderReviews() {
   const book = state.reviewBook;
   if (!book) return;
+  const reviewScroller = elements.reviewList.closest(".review-dialog-scroll");
+  const scrollTop = reviewScroller?.scrollTop || 0;
+  const previousPositions = window.librarySocialMotion?.capturePositions(elements.reviewList);
+  const rankedReviews = [...state.reviews].sort((a, b) => Number(b.likeCount || 0) - Number(a.likeCount || 0)
+    || new Date(b.updated_at) - new Date(a.updated_at));
   document.getElementById("review-dialog-title").textContent = `《${book.title_zh}》讀者評論`;
   document.getElementById("review-summary").innerHTML = `<strong>${state.reviews.length}</strong><span>則讀者評論</span>`;
   const own = state.reviews.find((review) => review.isOwner);
   if (own && !document.getElementById("review-content").value) document.getElementById("review-content").value = own.content;
   document.getElementById("review-submit").textContent = own ? "更新評論" : "發表評論";
   document.getElementById("review-book-context").innerHTML = `<img src="${encodeURI(book.cover_url || "")}" alt="《${escapeHtml(book.title_zh)}》封面"><div><strong>${escapeHtml(book.title_zh)}</strong><span>${escapeHtml(book.author)}</span><p>${escapeHtml(book.description_zh || "")}</p><a href="/reader.html?id=${encodeURIComponent(book.id)}">開啟這本書 →</a></div>`;
-  elements.reviewList.innerHTML = state.reviews.length ? state.reviews.map((review) => `<article class="review-card">
-    <div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt="" width="30" height="30" loading="lazy" decoding="async"><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
-    <p>${escapeHtml(review.content)}</p>
-    <div class="review-actions"><button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}"${state.reviewMutationPending.has(`like:${review.id}`) ? " disabled" : ""}>${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}"${state.reviewMutationPending.has(`favorite:${review.id}`) ? " disabled" : ""}>${review.viewerFavorite ? "已收藏" : "收藏評論"} ${review.favoriteCount || 0}</button></div>
+  elements.reviewList.innerHTML = rankedReviews.length ? rankedReviews.map((review) => `<article class="review-card" data-social-key="review:${escapeHtml(review.id)}">
+    <div class="review-card-layout">
+      <div class="social-vote-rail like-only" role="group" aria-label="這則評論的讚賞">
+        <button class="social-vote-button ${review.viewerLiked ? "active" : ""}" type="button" data-review-like="${review.id}" aria-pressed="${review.viewerLiked}" aria-label="${review.viewerLiked ? "取消讚賞" : "讚賞評論"}"${state.reviewMutationPending.has(`like:${review.id}`) ? " disabled" : ""}>▲</button>
+        ${reviewLikeCountContent(review)}
+      </div>
+      <div class="review-card-body"><div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt="" width="30" height="30" loading="lazy" decoding="async"><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
+      <p>${escapeHtml(review.content)}</p>
+      <div class="review-actions"><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}"${state.reviewMutationPending.has(`favorite:${review.id}`) ? " disabled" : ""}>${review.viewerFavorite ? "已收藏" : "收藏評論"} ${review.favoriteCount || 0}</button></div></div>
+    </div>
   </article>`).join("") : '<p class="muted">還沒有文字評論，分享第一則無劇透心得吧。</p>';
+  if (reviewScroller) reviewScroller.scrollTop = scrollTop;
+  window.librarySocialMotion?.animateScores(elements.reviewList);
+  window.librarySocialMotion?.animateCardSwap(elements.reviewList, previousPositions);
 }
 
 async function openReviews(bookId) {
@@ -446,13 +485,13 @@ async function refreshReviews(bookId, { preferCache = false } = {}) {
     }),
     read(`/books/${encodeURIComponent(bookId)}/reviews`, `book-reviews:${bookId}`, (fresh) => {
       if (state.reviewBook?.id !== bookId || !elements.reviewDialog.open) return;
-      state.reviews = fresh.reviews;
+      applyReviewSnapshot(fresh.reviews);
       renderReviews();
     }),
   ]);
   if (!state.reviewBook || state.reviewBook.id !== bookId || !elements.reviewDialog.open) return;
   state.reviewBook = bookResult.book;
-  state.reviews = reviewResult.reviews;
+  applyReviewSnapshot(reviewResult.reviews);
   const cardBook = state.books.find((book) => book.id === bookId);
   if (cardBook) {
     Object.assign(cardBook.metrics, bookResult.book.metrics);
@@ -481,7 +520,10 @@ function syncReviewRealtime(bookId = null) {
   state.reviewRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
     if (events.length && !events.some((event) => ["book_rating", "review", "review_like", "review_favorite"].includes(event.resource))) return;
     clearTimeout(state.reviewRefreshTimer);
-    state.reviewRefreshTimer = setTimeout(() => refreshReviews(bookId).catch(() => {}), 320);
+    state.reviewRefreshTimer = setTimeout(
+      () => refreshReviews(bookId).catch(() => {}),
+      state.reviewMutationPending.size ? 1050 : 320,
+    );
   });
 }
 
@@ -517,19 +559,26 @@ async function toggleReviewLike(reviewId) {
   state.reviewMutationPending.add(pendingKey);
   review.viewerLiked = !review.viewerLiked;
   review.likeCount = Math.max(0, Number(review.likeCount || 0) + (review.viewerLiked ? 1 : -1));
+  queueReviewLikeAnimation(reviewId, previous.likeCount, review.likeCount);
   renderReviews();
+  const animationStartedAt = performance.now();
   try {
     const result = await window.libraryApi.post(`/reviews/${encodeURIComponent(reviewId)}/like`);
     const index = state.reviews.findIndex((review) => review.id === reviewId);
-    if (index >= 0) state.reviews[index] = result.review;
-    renderReviews();
+    if (index >= 0) {
+      queueReviewLikeAnimation(reviewId, state.reviews[index].likeCount, result.review.likeCount);
+      state.reviews[index] = result.review;
+    }
   } catch (error) {
+    queueReviewLikeAnimation(reviewId, review.likeCount, previous.likeCount);
     Object.assign(review, previous);
     window.libraryUX?.recordRollback("review-like", error.code);
     toast(error.message, "error");
   }
   finally {
     window.libraryApi.invalidate((key) => key.includes(`/books/${state.reviewBook?.id}/reviews`));
+    const remaining = 1000 - (performance.now() - animationStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     state.reviewMutationPending.delete(pendingKey);
     renderReviews();
   }

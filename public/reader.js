@@ -563,10 +563,17 @@ function annotationReplyTree(replies) {
 
 function annotationReplyMarkup(reply, depth = 0) {
   const votePending = readerState.annotationMutationPending.has(`reply-vote:${reply.id}`);
-  return `<article class="thread-note-reply" data-reply-id="${escapeHtml(reply.id)}" style="--reply-depth:${Math.min(depth, 5)}">
-    <header><img src="${escapeHtml(avatarFor(reply.author))}" alt=""><strong>${escapeHtml(reply.author?.public_display_name || "讀者")}</strong><time>${new Date(reply.created_at).toLocaleString("zh-TW")}</time></header>
-    <p>${escapeHtml(reply.content)}</p>
-    <div class="reply-actions"><button type="button" data-reply-vote="up" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "up" ? "active" : ""}" aria-pressed="${reply.viewerVote === "up"}"${votePending ? " disabled" : ""}>▲ ${Number(reply.upCount) || 0}</button><button type="button" data-reply-vote="down" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "down" ? "active down" : "down"}" aria-pressed="${reply.viewerVote === "down"}"${votePending ? " disabled" : ""}>▼ ${Number(reply.downCount) || 0}</button><span class="reply-score">${voteScoreContent(`reply:${reply.id}`, Number(reply.score) || 0)}</span><button type="button" data-reply-target="${escapeHtml(reply.id)}" data-reply-author="${escapeHtml(reply.author?.public_display_name || "讀者")}">回覆</button></div>
+  return `<article class="thread-note-reply" data-reply-id="${escapeHtml(reply.id)}" data-social-key="reply:${escapeHtml(reply.id)}" style="--reply-depth:${Math.min(depth, 5)}">
+    <div class="thread-reply-layout">
+      <div class="social-vote-rail" role="group" aria-label="這則回覆的評價">
+        <button type="button" data-reply-vote="up" data-reply-id="${escapeHtml(reply.id)}" class="social-vote-button ${reply.viewerVote === "up" ? "active" : ""}" aria-pressed="${reply.viewerVote === "up"}" aria-label="讚賞，目前 ${Number(reply.upCount) || 0} 票"${votePending ? " disabled" : ""}>▲</button>
+        ${voteScoreContent(`reply:${reply.id}`, Number(reply.score) || 0)}
+        <button type="button" data-reply-vote="down" data-reply-id="${escapeHtml(reply.id)}" class="social-vote-button down ${reply.viewerVote === "down" ? "active" : ""}" aria-pressed="${reply.viewerVote === "down"}" aria-label="不讚同，目前 ${Number(reply.downCount) || 0} 票"${votePending ? " disabled" : ""}>▼</button>
+      </div>
+      <div class="thread-reply-body"><header><img src="${escapeHtml(avatarFor(reply.author))}" alt=""><strong>${escapeHtml(reply.author?.public_display_name || "讀者")}</strong><time>${new Date(reply.created_at).toLocaleString("zh-TW")}</time></header>
+      <p>${escapeHtml(reply.content)}</p>
+      <div class="reply-actions"><button type="button" data-reply-target="${escapeHtml(reply.id)}" data-reply-author="${escapeHtml(reply.author?.public_display_name || "讀者")}">回覆</button></div></div>
+    </div>
     ${reply.children.map((child) => annotationReplyMarkup(child, depth + 1)).join("")}
   </article>`;
 }
@@ -583,10 +590,10 @@ function annotationThreadCard(note) {
   const favoritePending = readerState.annotationMutationPending.has(`note-favorite:${note.id}`);
   return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
     <div class="thread-note-layout">
-      <div class="note-vote-rail" role="group" aria-label="標注評價">
-        <button type="button" class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞，目前 ${Number(note.upCount) || 0} 票"${votePending ? " disabled" : ""}>▲</button>
-        <strong aria-label="淨分 ${note.score >= 0 ? "+" : ""}${note.score}">${voteScoreContent(`note:${note.id}`, Number(note.score) || 0)}</strong>
-        <button type="button" class="down ${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不讚同，目前 ${Number(note.downCount) || 0} 票"${votePending ? " disabled" : ""}>▼</button>
+      <div class="social-vote-rail" role="group" aria-label="標注評價">
+        <button type="button" class="social-vote-button ${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞，目前 ${Number(note.upCount) || 0} 票"${votePending ? " disabled" : ""}>▲</button>
+        ${voteScoreContent(`note:${note.id}`, Number(note.score) || 0)}
+        <button type="button" class="social-vote-button down ${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不讚同，目前 ${Number(note.downCount) || 0} 票"${votePending ? " disabled" : ""}>▼</button>
       </div>
       <div class="thread-note-body">
         <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
@@ -619,10 +626,10 @@ function signedScore(score) {
 function voteScoreContent(key, score) {
   const animation = readerState.voteAnimations.get(key);
   readerState.voteAnimations.delete(key);
-  if (!animation || animation.from === animation.to) return signedScore(score);
-  const direction = animation.to > animation.from ? "up" : "down";
-  const values = direction === "up" ? [animation.from, animation.to] : [animation.to, animation.from];
-  return `<span class="vote-score-window" aria-hidden="true"><span class="vote-score-track ${direction}"><span>${signedScore(values[0])}</span><span>${signedScore(values[1])}</span></span></span>`;
+  const attributes = animation && animation.from !== animation.to
+    ? ` data-score-from="${animation.from}" data-score-to="${animation.to}"`
+    : "";
+  return `<strong class="social-vote-score" aria-label="淨分 ${signedScore(score)}"${attributes}>${signedScore(score)}</strong>`;
 }
 
 function annotationClusterForNote(noteId) {
@@ -633,6 +640,11 @@ function openAnnotationThread(noteId, { reset = false } = {}) {
   const selected = readerState.annotations.find((note) => note.id === noteId);
   const cluster = selected ? annotationClusterForNote(noteId) : null;
   if (!selected || !cluster) return;
+  const dialog = document.getElementById("annotation-thread-dialog");
+  const content = document.getElementById("annotation-thread-content");
+  const preserveViewport = dialog.open && readerState.activeThreadNoteId === noteId;
+  const scrollTop = preserveViewport ? content.scrollTop : 0;
+  const previousPositions = window.librarySocialMotion?.capturePositions(content);
   if (reset || readerState.activeThreadNoteId !== noteId) {
     readerState.replySort = "best";
     readerState.replyParentId = null;
@@ -644,10 +656,11 @@ function openAnnotationThread(noteId, { reset = false } = {}) {
   previousButton.disabled = pageIndex <= 0;
   nextButton.disabled = pageIndex >= cluster.notes.length - 1;
   document.getElementById("annotation-thread-page").textContent = `${pageIndex + 1} / ${cluster.notes.length}`;
-  document.getElementById("annotation-thread-content").innerHTML = annotationThreadCard(selected);
-  for (const reply of selected.replies || []) readerState.voteAnimations.delete(`reply:${reply.id}`);
+  content.innerHTML = annotationThreadCard(selected);
   document.getElementById("annotation-thread-composer").innerHTML = annotationComposerMarkup(selected);
-  const dialog = document.getElementById("annotation-thread-dialog");
+  content.scrollTop = scrollTop;
+  window.librarySocialMotion?.animateScores(content);
+  window.librarySocialMotion?.animateCardSwap(content, previousPositions);
   if (!dialog.open) dialog.showModal();
 }
 
@@ -762,7 +775,7 @@ function syncAnnotationRealtime(active) {
   readerState.annotationRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
     if (events.length && !events.some((event) => event.resource.startsWith("annotation"))) return;
     clearTimeout(readerState.annotationRefreshTimer);
-    readerState.annotationRefreshTimer = setTimeout(() => loadAnnotations(), readerState.annotationMutationPending.size ? 520 : 280);
+    readerState.annotationRefreshTimer = setTimeout(() => loadAnnotations(), readerState.annotationMutationPending.size ? 1050 : 280);
   });
 }
 
@@ -813,7 +826,7 @@ async function voteAnnotation(id, voteType) {
     toast(error.message, "error");
   }
   finally {
-    const remaining = 430 - (performance.now() - animationStartedAt);
+    const remaining = 1000 - (performance.now() - animationStartedAt);
     if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     readerState.annotationMutationPending.delete(pendingKey);
     renderAnnotationState();
@@ -903,7 +916,7 @@ async function voteAnnotationReply(replyId, voteType) {
     toast(error.message, "error");
   }
   finally {
-    const remaining = 430 - (performance.now() - animationStartedAt);
+    const remaining = 1000 - (performance.now() - animationStartedAt);
     if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     readerState.annotationMutationPending.delete(pendingKey);
     renderAnnotationState();

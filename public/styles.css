@@ -191,3 +191,13 @@ a { color: inherit; }
   *, *::before, *::after { scroll-behavior:auto!important; animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; }
   .source-landscape.source-reveal-ready > *,.source-landscape.is-revealed > *,.source-landscape.is-revealed .source-mountain:hover { opacity:1!important; transform:none!important; transition-delay:0s!important; }
 }
+
+/* Review cards share the same left-side interaction rail as discussions. */
+.review-card-layout { display:grid; grid-template-columns:42px minmax(0,1fr); gap:14px; }
+.review-card-body { min-width:0; }
+.review-actions .review-favorite { border:0; padding:6px 9px; color:var(--green); background:#eee5d7; cursor:pointer; font-size:10px; }
+.review-actions .review-favorite.active { color:#fff; background:var(--rust); }
+@media (max-width:700px) {
+  .review-card { padding:12px; }
+  .review-card-layout { grid-template-columns:36px minmax(0,1fr); gap:9px; }
+}

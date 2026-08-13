@@ -48,3 +48,14 @@ button,select,textarea { font:inherit; }
 .muted { color:#777; font:12px var(--serif); text-align:center; }
 @media (max-width:700px) { .reader-header { gap:6px; padding:0 8px; }.back-link span,.reader-title small,.progress-head { display:none; }.reader-title { text-align:left; }.reader-icon { min-width:34px; width:34px; height:34px; }.reader-login { padding:6px 9px; }.reader-main { inset-bottom:34px; }.page-turn { position:absolute; z-index:10; bottom:8px; width:42px; height:42px; border-radius:50%; background:rgba(27,33,29,.75); color:#fff; }.page-turn.previous { left:8px; }.page-turn.next { right:8px; }.reader-footer { height:34px; }.reader-footer button { display:none; }.reader-footer { grid-template-columns:1fr; text-align:center; }.settings-popover { top:58px; right:6px; width:min(310px,calc(100vw - 12px)); }.reader-panel { top:58px; bottom:34px; width:100vw; }.selection-action { bottom:calc(48px + env(safe-area-inset-bottom)); min-width:150px; padding:13px 22px; }.annotation-dialog,.annotation-thread-dialog { width:100vw; height:92dvh; max-width:none; max-height:92dvh; margin:auto 0 0; border-radius:10px 10px 0 0; }.annotation-dialog form,.annotation-thread-shell { padding:24px 17px 0; }.annotation-thread-composer { margin:0 -17px; }.annotation-thread-composer .thread-reply-form { padding:10px 17px calc(10px + env(safe-area-inset-bottom)); }.annotation-dialog textarea { min-height:130px; }.thread-note { padding:12px; }.thread-note-layout { grid-template-columns:36px minmax(0,1fr); gap:9px; }.note-vote-rail { top:5px; padding:4px 1px; }.note-vote-rail button { width:29px; min-height:34px; }.thread-note-reply .thread-note-reply { margin-left:9px; padding-left:8px; }.reply-actions button { min-height:38px; }.thread-reply-heading { align-items:flex-start; } }
 @media (prefers-reduced-motion:reduce) { .vote-score-track.up,.vote-score-track.down { animation:none; transform:translateY(-50%); }.vote-score-track.down { transform:translateY(0); } }
+
+/* All reader interactions use the shared discussion vote rail. */
+.thread-reply-layout { display:grid; grid-template-columns:42px minmax(0,1fr); gap:14px; }
+.thread-reply-body { min-width:0; }
+.thread-reply-body .reply-actions { justify-content:flex-start; }
+.thread-reply-body .reply-actions button { color:#5f564d; background:#eee7dc; }
+.thread-reply-body .reply-actions button:hover { color:#fff; background:var(--rust); }
+
+@media (max-width:700px) {
+  .thread-reply-layout { grid-template-columns:36px minmax(0,1fr); gap:9px; }
+}
