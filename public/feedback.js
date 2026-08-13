@@ -4,6 +4,10 @@ const feedbackState = {
   activeId: null,
   query: "",
   votePending: new Set(),
+  deletePending: new Set(),
+  cursor: null,
+  hasMore: false,
+  loading: false,
   realtimeStop: null,
   refreshTimer: null,
   refreshThreadIds: new Set(),
@@ -20,6 +24,8 @@ const feedbackElements = {
   replyForm: document.getElementById("feedback-reply-form"),
   createDialog: document.getElementById("feedback-create-dialog"),
   createForm: document.getElementById("feedback-create-form"),
+  loadMoreWrap: document.getElementById("feedback-load-more-wrap"),
+  loadMore: document.getElementById("feedback-load-more"),
 };
 
 function escapeHtml(value = "") {
@@ -62,35 +68,25 @@ function rebuildThreads() {
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 }
 
-function searchableText(thread) {
-  return [thread.subject, thread.content, thread.author?.public_display_name, ...thread.replies.flatMap((reply) => [reply.content, reply.author?.public_display_name])]
-    .filter(Boolean).join(" ").normalize("NFKC").toLocaleLowerCase("zh-Hant");
-}
-
-function filteredThreads() {
-  const terms = feedbackState.query.normalize("NFKC").toLocaleLowerCase("zh-Hant").split(/\s+/).filter(Boolean);
-  if (!terms.length) return feedbackState.roots;
-  return feedbackState.roots.filter((thread) => {
-    const haystack = searchableText(thread);
-    return terms.every((term) => haystack.includes(term));
-  });
-}
-
 function roleBadge(author = {}) {
   if (!['admin', 'moderator'].includes(author.role)) return "";
   return `<span class="role-badge">${author.role === "admin" ? "館員" : "版主"}</span>`;
 }
 
 function renderFeedback() {
-  const threads = filteredThreads();
+  const threads = feedbackState.roots;
   feedbackElements.empty.hidden = threads.length > 0;
   feedbackElements.list.hidden = threads.length === 0;
   feedbackElements.summary.textContent = feedbackState.query
-    ? `「${feedbackState.query}」找到 ${threads.length} 段討論（已搜尋所有回覆）`
-    : `共 ${threads.length} 段公開討論`;
+    ? `「${feedbackState.query}」目前顯示 ${threads.length} 段討論（伺服器已搜尋主旨、作者與所有回覆）`
+    : `目前顯示 ${threads.length} 段公開討論${feedbackState.hasMore ? "，可繼續載入" : ""}`;
+  feedbackElements.loadMoreWrap.hidden = !feedbackState.hasMore;
+  feedbackElements.loadMore.disabled = feedbackState.loading;
+  feedbackElements.loadMore.textContent = feedbackState.loading ? "正在載入…" : "載入更多討論";
   feedbackElements.list.innerHTML = threads.map((thread) => {
     const latest = thread.replies.at(-1);
-    const preview = latest ? latest.content : thread.content;
+    const preview = latest?.content || thread.latestReplyContent || thread.content;
+    const replyCount = thread.repliesLoaded ? thread.replies.length : Number(thread.replyCount || 0);
     return `<button class="feedback-card" type="button" data-thread-id="${thread.id}">
       <span class="feedback-card-line"></span>
       <span class="feedback-card-main">
@@ -98,7 +94,7 @@ function renderFeedback() {
         <strong class="feedback-card-title">${escapeHtml(thread.subject || "讀者建議")}</strong>
         <span class="feedback-card-preview">${escapeHtml(preview)}</span>
       </span>
-      <span class="feedback-card-count"><b>${thread.replies.length}</b><small>則回覆</small><i>↗</i></span>
+      <span class="feedback-card-count"><b>${replyCount}</b><small>則回覆</small><i>↗</i></span>
     </button>`;
   }).join("");
 }
@@ -108,6 +104,7 @@ function messageMarkup(message, { root = false } = {}) {
   const upCount = Number(message.upCount) || 0;
   const downCount = Number(message.downCount) || 0;
   const pending = feedbackState.votePending.has(message.id);
+  const deletePending = feedbackState.deletePending.has(message.id);
   return `<article class="thread-message${root ? " root" : ""}">
     <header><img src="${escapeHtml(safeAvatar(message.author))}" alt=""><div><strong>${escapeHtml(message.author?.public_display_name || "讀者")}</strong><time>${new Date(message.created_at).toLocaleString("zh-TW")}</time></div>${roleBadge(message.author)}</header>
     <p>${escapeHtml(message.content)}</p>
@@ -115,28 +112,47 @@ function messageMarkup(message, { root = false } = {}) {
       <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▲</span> 讚 <b>${upCount}</b></button>
       <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▼</span> 倒讚 <b>${downCount}</b></button>
       <span class="feedback-vote-score" aria-label="淨分 ${score}">淨分 ${score >= 0 ? "+" : ""}${score}</span>
+      ${message.isOwner ? `<button type="button" class="feedback-delete" data-feedback-delete="${escapeHtml(message.id)}"${deletePending ? " disabled" : ""}>${deletePending ? "刪除中…" : "刪除"}</button>` : ""}
     </div>
   </article>`;
 }
 
 function replaceFeedbackMessage(updated) {
   feedbackState.requestId += 1;
-  feedbackState.messages = feedbackState.messages.map((message) => message.id === updated.id ? updated : message);
+  feedbackState.loading = false;
+  feedbackState.messages = feedbackState.messages.map((message) => message.id === updated.id ? { ...message, ...updated } : message);
 }
 
-function mergeFeedbackThreads(messages = []) {
+function mergeFeedbackThreads(messages = [], { complete = true, invalidateRequest = true } = {}) {
   const roots = new Set(messages.map((message) => message.parent_id || message.id));
   if (!roots.size) return;
-  feedbackState.requestId += 1;
+  if (invalidateRequest) {
+    feedbackState.requestId += 1;
+    feedbackState.loading = false;
+  }
+  const previousRoots = new Map(feedbackState.messages.filter((message) => !message.parent_id).map((message) => [message.id, message]));
+  const incomingRoots = messages.filter((message) => !message.parent_id).map((root) => {
+    const replies = messages.filter((message) => message.parent_id === root.id)
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    return {
+      ...previousRoots.get(root.id),
+      ...root,
+      ...(complete ? {
+        repliesLoaded: true,
+        replyCount: replies.length,
+        latestReplyContent: replies.at(-1)?.content || null,
+      } : {}),
+    };
+  });
   feedbackState.messages = feedbackState.messages
     .filter((message) => !roots.has(message.parent_id || message.id))
-    .concat(messages);
+    .concat(incomingRoots, messages.filter((message) => message.parent_id));
 }
 
 function renderFeedbackViews() {
   rebuildThreads();
   renderFeedback();
-  if (feedbackState.activeId) openThread(feedbackState.activeId, { updateUrl: false });
+  if (feedbackState.activeId) void openThread(feedbackState.activeId, { updateUrl: false });
 }
 
 function optimisticFeedbackVote(message, nextVote) {
@@ -160,6 +176,7 @@ async function toggleFeedbackVote(feedbackId, voteType) {
   try {
     const result = await window.libraryApi.post(`/feedback/${encodeURIComponent(feedbackId)}/vote`, { voteType: nextVote });
     if (result.message) replaceFeedbackMessage(result.message);
+    window.libraryApi.invalidate("feedback");
   } catch (error) {
     replaceFeedbackMessage(message);
     window.libraryUX?.recordRollback?.("feedback-vote", error.code);
@@ -170,29 +187,107 @@ async function toggleFeedbackVote(feedbackId, voteType) {
   }
 }
 
-function openThread(id, { updateUrl = true } = {}) {
-  const thread = feedbackState.roots.find((item) => item.id === id);
-  if (!thread) return;
-  feedbackState.activeId = id;
-  feedbackElements.threadContent.innerHTML = `<p class="eyebrow">READER CONVERSATION</p><h2>${escapeHtml(thread.subject || "讀者建議")}</h2>${messageMarkup(thread, { root: true })}<div class="thread-divider"><span>${thread.replies.length} 則回覆</span></div><div class="thread-replies">${thread.replies.map((reply) => messageMarkup(reply)).join("") || '<p class="thread-no-replies">尚未有人回覆，成為第一位加入討論的讀者。</p>'}</div>`;
+function showThread(thread) {
+  const replyCount = thread.repliesLoaded ? thread.replies.length : Number(thread.replyCount || 0);
+  feedbackElements.threadContent.innerHTML = `<p class="eyebrow">READER CONVERSATION</p><h2>${escapeHtml(thread.subject || "讀者建議")}</h2>${messageMarkup(thread, { root: true })}<div class="thread-divider"><span>${replyCount} 則回覆</span></div><div class="thread-replies">${thread.replies.map((reply) => messageMarkup(reply)).join("") || '<p class="thread-no-replies">尚未有人回覆，成為第一位加入討論的讀者。</p>'}</div>`;
   feedbackElements.replyForm.hidden = !window.libraryAuth.user;
-  if (!feedbackElements.threadDialog.open) feedbackElements.threadDialog.showModal();
-  if (updateUrl) history.replaceState(null, "", `${location.pathname}?thread=${encodeURIComponent(id)}`);
 }
 
-async function loadFeedback({ preserveThread = true } = {}) {
-  const requestId = ++feedbackState.requestId;
+async function openThread(id, { updateUrl = true, force = false } = {}) {
+  feedbackState.activeId = id;
+  if (!feedbackElements.threadDialog.open) feedbackElements.threadDialog.showModal();
+  if (updateUrl) history.replaceState(null, "", `${location.pathname}?thread=${encodeURIComponent(id)}`);
+  let thread = feedbackState.roots.find((item) => item.id === id);
+  if (thread?.repliesLoaded && !force) return showThread(thread);
+  feedbackElements.threadContent.innerHTML = '<div class="feedback-thread-loading" role="status"><span class="loading-mark"></span><p>正在載入討論與回覆…</p></div>';
+  feedbackElements.replyForm.hidden = true;
+  const endpoint = `/feedback?thread=${encodeURIComponent(id)}`;
   try {
-    const result = await window.libraryApi.get("/feedback");
-    if (requestId !== feedbackState.requestId) return;
-    feedbackState.messages = result.messages || [];
+    const result = force
+      ? await window.libraryApi.get(endpoint)
+      : await window.libraryApi.cachedGet(endpoint, {
+        key: `feedback-thread:${id}`,
+        private: Boolean(window.libraryAuth.user),
+        staleTime: 20_000,
+        onUpdate: (updated) => {
+          if (feedbackState.activeId !== id) return;
+          mergeFeedbackThreads(updated.messages || [], { complete: true });
+          rebuildThreads();
+          renderFeedback();
+          const current = feedbackState.roots.find((item) => item.id === id);
+          if (current) showThread(current);
+        },
+      });
+    if (feedbackState.activeId !== id) return;
+    mergeFeedbackThreads(result.messages || [], { complete: true });
     rebuildThreads();
     renderFeedback();
-    if (preserveThread && feedbackState.activeId) openThread(feedbackState.activeId, { updateUrl: false });
+    thread = feedbackState.roots.find((item) => item.id === id);
+    if (!thread) throw new Error("找不到這段討論，可能已由作者刪除。");
+    showThread(thread);
+  } catch (error) {
+    if (feedbackState.activeId !== id) return;
+    feedbackElements.threadContent.innerHTML = `<div class="feedback-thread-loading error"><p>${escapeHtml(error.message)}</p><button type="button" class="button button-quiet" data-thread-retry="${escapeHtml(id)}">重新嘗試</button></div>`;
+    toast(error.message, "error");
+  }
+}
+
+function feedbackPageEndpoint() {
+  const params = new URLSearchParams({ limit: "24" });
+  if (feedbackState.query) params.set("q", feedbackState.query);
+  if (feedbackState.cursor) {
+    params.set("beforeCreatedAt", feedbackState.cursor.beforeCreatedAt);
+    params.set("beforeId", feedbackState.cursor.beforeId);
+  }
+  return `/feedback?${params}`;
+}
+
+function applyFeedbackPage(result, { preserveThread = true, append = false } = {}) {
+  const activeRows = preserveThread && feedbackState.activeId
+    ? feedbackState.messages.filter((message) => (message.parent_id || message.id) === feedbackState.activeId)
+    : [];
+  if (append) {
+    const existingIds = new Set(feedbackState.messages.map((message) => message.id));
+    feedbackState.messages.push(...(result.messages || []).filter((message) => !existingIds.has(message.id)));
+  } else {
+    feedbackState.messages = result.messages || [];
+    if (activeRows.length) mergeFeedbackThreads(activeRows, { complete: true, invalidateRequest: false });
+  }
+  feedbackState.hasMore = Boolean(result.hasMore);
+  feedbackState.cursor = result.cursor || null;
+  rebuildThreads();
+  renderFeedback();
+  if (preserveThread && feedbackState.activeId) void openThread(feedbackState.activeId, { updateUrl: false });
+}
+
+async function loadFeedback({ preserveThread = true, append = false } = {}) {
+  if (append && feedbackState.loading) return;
+  if (!append) feedbackState.cursor = null;
+  feedbackState.loading = true;
+  renderFeedback();
+  const requestId = ++feedbackState.requestId;
+  const endpoint = feedbackPageEndpoint();
+  try {
+    const result = await window.libraryApi.cachedGet(endpoint, {
+      key: `feedback-page:${feedbackState.query}:${feedbackState.cursor?.beforeCreatedAt || "first"}:${feedbackState.cursor?.beforeId || ""}`,
+      private: Boolean(window.libraryAuth.user),
+      staleTime: 20_000,
+      onUpdate: (updated) => {
+        if (requestId !== feedbackState.requestId) return;
+        applyFeedbackPage(updated, { preserveThread, append });
+      },
+    });
+    if (requestId !== feedbackState.requestId) return;
+    applyFeedbackPage(result, { preserveThread, append });
   } catch (error) {
     if (requestId !== feedbackState.requestId) return;
     feedbackElements.summary.textContent = "暫時無法載入讀者回饋";
     toast(error.message, "error");
+  } finally {
+    if (requestId === feedbackState.requestId) {
+      feedbackState.loading = false;
+      renderFeedback();
+    }
   }
 }
 
@@ -202,10 +297,38 @@ async function refreshFeedbackThreads(ids) {
   if (threadIds.length > 4) return loadFeedback();
   try {
     const results = await Promise.all(threadIds.map((id) => window.libraryApi.get(`/feedback?thread=${encodeURIComponent(id)}`)));
-    mergeFeedbackThreads(results.flatMap((result) => result.messages || []));
+    mergeFeedbackThreads(results.flatMap((result) => result.messages || []), { complete: true });
     renderFeedbackViews();
   } catch (error) {
     if (navigator.onLine) console.warn("Feedback delta refresh failed", error);
+  }
+}
+
+async function deleteFeedback(feedbackId) {
+  if (!requireLogin() || feedbackState.deletePending.has(feedbackId)) return;
+  const message = feedbackState.messages.find((item) => item.id === feedbackId);
+  if (!message?.isOwner) return;
+  if (!window.confirm(message.parent_id ? "確定刪除這則回覆？" : "確定刪除這段討論？相關回覆將不再顯示。")) return;
+  feedbackState.deletePending.add(feedbackId);
+  renderFeedbackViews();
+  try {
+    const result = await window.libraryApi.delete(`/feedback/${encodeURIComponent(feedbackId)}`);
+    window.libraryApi.invalidate("feedback");
+    if (!message.parent_id) {
+      feedbackState.messages = feedbackState.messages.filter((item) => (item.parent_id || item.id) !== feedbackId);
+      if (feedbackState.activeId === feedbackId) feedbackElements.threadDialog.close();
+      rebuildThreads();
+      renderFeedback();
+    } else {
+      feedbackState.messages = feedbackState.messages.filter((item) => item.id !== feedbackId);
+      await refreshFeedbackThreads([result.deleted?.rootId || message.parent_id]);
+    }
+    toast("內容已刪除");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    feedbackState.deletePending.delete(feedbackId);
+    renderFeedbackViews();
   }
 }
 
@@ -236,6 +359,10 @@ function syncFeedbackRealtime() {
 
 function renderAuth(user) {
   document.getElementById("login-button").hidden = Boolean(user);
+  const createButton = document.getElementById("new-feedback-button");
+  createButton.disabled = false;
+  createButton.removeAttribute("aria-busy");
+  createButton.textContent = user ? "＋ 提出新回饋" : "登入後提出回饋";
   const menu = document.getElementById("user-menu");
   menu.hidden = !user;
   if (user) {
@@ -250,19 +377,27 @@ function wireFeedbackEvents() {
   let searchTimer;
   feedbackElements.search.addEventListener("input", () => {
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { feedbackState.query = feedbackElements.search.value.trim(); renderFeedback(); }, 120);
+    searchTimer = setTimeout(() => {
+      feedbackState.query = feedbackElements.search.value.trim();
+      loadFeedback({ preserveThread: true, append: false });
+    }, 320);
   });
   document.addEventListener("keydown", (event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "k") { event.preventDefault(); feedbackElements.search.focus(); }
   });
   feedbackElements.list.addEventListener("click", (event) => {
     const card = event.target.closest("[data-thread-id]");
-    if (card) openThread(card.dataset.threadId);
+    if (card) void openThread(card.dataset.threadId);
   });
   feedbackElements.threadContent.addEventListener("click", (event) => {
     const button = event.target.closest("[data-feedback-vote]");
-    if (button) toggleFeedbackVote(button.dataset.feedbackId, button.dataset.feedbackVote);
+    if (button) { toggleFeedbackVote(button.dataset.feedbackId, button.dataset.feedbackVote); return; }
+    const remove = event.target.closest("[data-feedback-delete]");
+    if (remove) { deleteFeedback(remove.dataset.feedbackDelete); return; }
+    const retry = event.target.closest("[data-thread-retry]");
+    if (retry) void openThread(retry.dataset.threadRetry, { updateUrl: false, force: true });
   });
+  feedbackElements.loadMore.addEventListener("click", () => loadFeedback({ append: true }));
   document.getElementById("new-feedback-button").addEventListener("click", () => {
     if (!requireLogin()) return;
     feedbackElements.createForm.reset();
@@ -276,7 +411,8 @@ function wireFeedbackEvents() {
     window.libraryUX?.setBusy(feedbackElements.createForm, true, "正在建立討論");
     try {
       const result = await window.libraryApi.post("/feedback", { subject: document.getElementById("feedback-subject").value.trim(), content: document.getElementById("feedback-content").value.trim() });
-      mergeFeedbackThreads(result.messages || []);
+      window.libraryApi.invalidate("feedback");
+      mergeFeedbackThreads(result.messages || [], { complete: true });
       feedbackElements.createDialog.close();
       feedbackElements.createForm.reset();
       renderFeedbackViews();
@@ -292,8 +428,9 @@ function wireFeedbackEvents() {
     window.libraryUX?.setBusy(feedbackElements.replyForm, true, "正在送出回覆");
     try {
       const result = await window.libraryApi.post("/feedback", { parentId: feedbackState.activeId, content: document.getElementById("feedback-reply-content").value.trim() });
+      window.libraryApi.invalidate("feedback");
       feedbackElements.replyForm.reset();
-      mergeFeedbackThreads(result.messages || []);
+      mergeFeedbackThreads(result.messages || [], { complete: true });
       renderFeedbackViews();
       toast("回覆已送出");
     } catch (error) { toast(error.message, "error"); }
@@ -304,7 +441,15 @@ function wireFeedbackEvents() {
   document.getElementById("login-button").addEventListener("click", () => window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")));
   document.getElementById("logout-button").addEventListener("click", () => window.libraryAuth.logout());
   document.getElementById("user-toggle").addEventListener("click", (event) => { const dropdown = document.getElementById("user-dropdown"); dropdown.hidden = !dropdown.hidden; event.currentTarget.setAttribute("aria-expanded", String(!dropdown.hidden)); });
-  window.addEventListener("library-auth-changed", (event) => { renderAuth(event.detail.user); loadFeedback(); });
+  window.addEventListener("library-auth-changed", (event) => {
+    renderAuth(event.detail.user);
+    if (window.libraryAuth.initialized) loadFeedback({ preserveThread: true });
+  });
+  window.addEventListener("pagehide", () => {
+    clearTimeout(feedbackState.refreshTimer);
+    feedbackState.realtimeStop?.();
+    feedbackState.realtimeStop = null;
+  }, { once: true });
 }
 
 async function initializeFeedback() {
@@ -314,7 +459,7 @@ async function initializeFeedback() {
   await loadFeedback({ preserveThread: false });
   syncFeedbackRealtime();
   const requestedThread = new URLSearchParams(location.search).get("thread");
-  if (requestedThread) openThread(requestedThread, { updateUrl: false });
+  if (requestedThread) await openThread(requestedThread, { updateUrl: false });
 }
 
 initializeFeedback();

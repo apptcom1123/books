@@ -2,6 +2,14 @@ import express from "express";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+for (const parameter of ["annotationId", "replyId", "reviewId"]) {
+  router.param(parameter, (req, res, next, value) => {
+    if (!UUID.test(value)) return res.status(400).json({ error: "INVALID_RESOURCE_ID", message: "內容識別碼不正確。" });
+    next();
+  });
+}
 
 router.get("/books/:bookId/annotations", async (req, res, next) => {
   try {

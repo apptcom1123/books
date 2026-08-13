@@ -38,13 +38,15 @@ Google Cloud 的 Authorized redirect URI 使用 Supabase 顯示的 `/auth/v1/cal
 npm run verify:supabase
 ```
 
+這個指令在你的專案目錄／本機終端執行；它會用 `.env` 的 Supabase URL 與 publishable key 呼叫正式 Supabase REST API，檢查公開讀取、私人表隔離及必要 RPC。SQL 本身才是在 Supabase SQL Editor 執行。`verify:supabase` 不會建立資料表，也不會寫入或刪除正式資料。
+
 若顯示 `PGRST205`，代表該 Supabase project 尚未執行 schema；首頁仍可能用靜態館藏正常顯示，但登入後的收藏、評論與標注不會工作。
 
-每次拉取包含資料表／RPC 更新的版本後都要重新完整執行一次 schema；檔案採 `if not exists` 與可重建函式設計，既有館藏、帳號、標注與閱讀進度不會被清空。
+每次拉取包含資料表／RPC 更新的版本後，依日期順序在 Supabase SQL Editor 執行尚未套用的 `server/db/migrations/*.sql`；全新環境則完整執行 schema。migration 與 schema 都使用 transaction，既有館藏、帳號、標注與閱讀進度不會被清空。
 
 ## 回饋與閱讀標注
 
-`/feedback.html` 是獨立的讀者回饋頁，搜尋範圍包含討論主旨、本文、作者及所有回覆；點選結果會開啟完整討論視窗。
+`/feedback.html` 是獨立的讀者回饋頁，搜尋範圍包含討論主旨、本文、作者及所有回覆；列表以 `created_at + id` 游標分頁，只先載入根討論與回覆摘要，點選後才載入完整討論。作者可以刪除自己的討論或回覆。
 
 閱讀器不會在反白時立刻打開表單。完成選取後先按畫面下方的「增加標注」，再決定內容與公開範圍。公私標注都儲存在 Supabase；RLS 只允許作者讀取自己的私人標注。和 `yz_json` 一樣，標注以章節內的文字起始位置計算，每 5 個位置聚合成一顆泡泡；公私標注分開聚合，舊版沒有文字位移的資料保持獨立以避免錯誤合併。公開泡泡依局部討論串的淨分、讚數與時間排名，顯示閾值可在閱讀器或個人書房調整。點兩下泡泡會開啟該五字詞區段內的所有獨立小討論串。
 
@@ -99,7 +101,7 @@ node --check public/reader.js
 node --check public/realtime.js
 ```
 
-完成一次 Google 登入並取得短效 access token 後，可以對本機 API 執行登入後煙霧測試。它會測試並還原通知／泡泡閾值設定、圖書收藏和評分，另建立後刪除暫時書評、讚賞／收藏、標注、標注與回覆投票：
+完成一次 Google 登入並取得短效 access token 後，可以對本機 API 執行登入後煙霧測試。它會測試並還原通知／泡泡閾值設定、圖書收藏和評分，另建立後刪除暫時書評、讚賞／收藏、標注、標注與回覆投票，以及回饋討論、回覆、投票與搜尋：
 
 ```powershell
 $env:SUPABASE_TEST_ACCESS_TOKEN='短效 access token'

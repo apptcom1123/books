@@ -76,10 +76,28 @@ for (const [table, columns, exposure] of checks) {
   }
 }
 
+try {
+  const response = await fetch(new URL("/rest/v1/rpc/get_library_feedback_root_page", supabaseUrl), {
+    method: "POST",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ p_limit: 1, p_before_created_at: null, p_before_id: null, p_search: null }),
+  });
+  if (response.ok) console.log("  OK        get_library_feedback_root_page RPC");
+  else {
+    failed = true;
+    let detail = `HTTP ${response.status}`;
+    try { const body = await response.json(); detail = body.code ? `${body.code}: ${body.message || detail}` : body.message || detail; } catch {}
+    console.log(`  FAILED    get_library_feedback_root_page RPC (${detail})`);
+  }
+} catch (error) {
+  failed = true;
+  console.log(`  ERROR     get_library_feedback_root_page RPC (${error.message})`);
+}
+
 if (failed) {
-  console.error("\nSupabase schema/RLS verification failed. Re-run server/db/library-schema.sql in the Supabase SQL Editor, then run this check again.");
+  console.error("\nSupabase schema/RLS verification failed. Run pending files in server/db/migrations in the Supabase SQL Editor (or apply server/db/library-schema.sql for a full refresh), then run this check again.");
   process.exit(1);
 }
 
 console.log(`\nSupabase ${accessToken ? "authenticated schema and RLS" : "public schema and private-table isolation"} are ready.`);
-if (!accessToken) console.log("Set SUPABASE_TEST_ACCESS_TOKEN temporarily to verify authenticated mutations and private reads as well.");
+if (!accessToken) console.log("Set SUPABASE_TEST_ACCESS_TOKEN temporarily to verify authenticated private reads; use npm run test:authenticated for actual mutations.");

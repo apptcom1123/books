@@ -5,6 +5,8 @@
 ## 問題與根因
 
 - 公開書評、公開標注與標注回覆的 RLS policy 混入只授權 `authenticated` 的 `library_user_is_active()`；匿名讀取會回 `42501`，並使建立標注後的重新載入、回覆與投票看似失敗。
+- 標注已改用可信任的文字位移與五字聚合，但 `book_annotations` 的欄位級 `INSERT` grant 沒有同步加入三個必填欄位；因此已登入使用者仍會在資料庫層建立失敗。
+- 回饋列表一次抓取最多 200 筆主題與回覆，再由瀏覽器搜尋和整理；資料增加後 payload、作者與投票 hydration 都會變慢，也沒有自己的內容刪除權限。
 - 標注回覆完成時仍處於 pending 狀態，重新渲染後表單保持停用，使用者無法繼續回覆。
 - epub.js 會保留每次注入的主題 CSS；反覆切換後，較晚注入的舊規則持續覆蓋目前選擇。
 - `dist` 曾與 `public` 原始碼不同步；直接使用舊輸出會缺少新版 API 錯誤、逾時、快取與 UX 邏輯。
@@ -22,6 +24,15 @@
 9. **錯誤與離線訊息**：區分輸入錯誤、內容不存在、登入失效、權限、資料庫未更新、逾時、離線與 5xx；後端不再把所有資料庫錯誤都包成不明 500。
 10. **驗證工具**：`verify:supabase` 現在會區分「私人表正確拒絕匿名」與「公開 RLS 故障」，並涵蓋新增的投票／收藏表。
 11. **建置一致性**：已重新執行 build，並以 SHA-256 逐檔確認 `dist` 與 `public` 相同；Vercel 部署時也會由 build command 重建。
+12. **登入狀態收斂**：互動 API 遇到 `401` 時只自動刷新一次 Supabase session 並重送原要求；刷新失敗會清除登入者與私人快取，避免畫面顯示已登入但 API 持續匿名。
+13. **登入確認前鎖定操作**：回饋建立按鈕在 auth ready 前保持停用，確認身分後才顯示「提出回饋」或「登入後提出回饋」。
+14. **註解建立權限**：migration 補齊 `anchor_offset_start`、`anchor_offset_end`、`cluster_key` 欄位級 INSERT grant；登入 smoke test 也實際送出這三欄。
+15. **回饋分頁與延遲載入**：新增 `created_at + id` 游標 RPC、根討論索引與「載入更多」；列表只取根討論、回覆數和最新摘要，完整回覆在開啟討論時才載入。
+16. **伺服器搜尋**：主旨、本文、作者與所有有效回覆改由 RPC 搜尋，不再先下載固定 200 筆後由瀏覽器過濾。
+17. **回饋刪除**：新增自己的回饋 soft-delete RLS、DELETE route 與介面；使用者不能刪除他人的內容，管理員隱藏狀態也不會被一般使用者覆寫。
+18. **背景重新驗證**：回饋列表與討論串有快取時先顯示舊資料，stale 後在背景更新；舊請求仍由 request ID 阻止覆蓋新搜尋。
+19. **可追蹤 API 錯誤**：每個回應加入 `X-Request-Id`；後端記錄錯誤／慢於 750 ms 的 route、狀態與耗時，前端錯誤紀錄包含 endpoint、status、code 與 request ID。
+20. **完整登入驗收**：`test:authenticated` 新增回饋討論／回覆／投票／搜尋／刪除，並修正標注 payload；測試結束會清理建立的暫時資料。
 
 ## `frontend_data_ux_onboarding.md` 對照
 
@@ -31,25 +42,25 @@
 | 操作立即回饋與回滾 | 投票／收藏樂觀更新、重複提交鎖定、失敗回滾與草稿保留已完成。 |
 | 必要欄位與請求整合 | 全部 repository `select(*)` 已移除；互動後只回傳受影響資料。 |
 | 搜尋與高頻事件 | 回饋搜尋維持 debounce；非同步列表增加最後請求保護。 |
-| 分頁／大量 DOM | 館藏維持分頁與「載入更多」；討論卡使用 `content-visibility` 且 API 有 200 筆上限。若討論量超過此上限，下一階段應改成 `created_at + id` 游標與伺服器搜尋。 |
+| 分頁／大量 DOM | 館藏與回饋都有「載入更多」；回饋已改為 `created_at + id` 游標及伺服器搜尋，完整回覆按需載入，討論卡另使用 `content-visibility`。 |
 | 快取生命週期 | 沿用專案的 `LibraryApi` stale-while-revalidate、帳號分區與登出清除；mutation 改為主鍵局部合併。此專案是原生 JS，故使用同等機制而非 React Query。 |
 | Realtime | 沿用小型 delta、批次刷新、去重、補漏、背景取消訂閱與重連後驗證；mutation 以伺服器資料收斂。 |
 | 渲染與媒體 | 館藏圖片維持固定尺寸、lazy loading；討論長列表使用瀏覽器原生延遲渲染。Storage 上傳與 Next.js hydration 本專案未使用。 |
 | 錯誤、離線與權限 | 網路狀態列、分類錯誤、有限 GET 重試、RLS 公私分離及 migration 驗證已完成。 |
-| 索引與原子更新 | 既有複合索引、RPC 計數與唯一鍵 upsert 保留；本次 RLS policy 修正不放寬資料邊界。 |
-| 可觀測性 | API 延遲／payload、LCP、CLS、INP、Realtime 健康度與 mutation rollback 均可記錄。 |
+| 索引與原子更新 | 新增回饋根討論游標索引；讚、收藏維持複合主鍵與 upsert/delete，評分及統計維持資料庫 RPC，不由前端讀值加一再寫回。 |
+| 可觀測性 | API 延遲／payload、request ID、錯誤 route、LCP、CLS、INP、Realtime 健康度與 mutation rollback 均可記錄。 |
 
 ## 驗證結果
 
 - `npm test`：19/19 通過。
 - JavaScript syntax check：前端、後端、repository 與驗證腳本通過。
 - `npm run build`：200 筆館藏、200 個 EPUB 建置成功。
-- `dist`／`public` hash：一致。
-- 正式 Supabase 公開檢查：目前仍會在三個舊 policy 回 `42501`；必須先執行下列部署步驟。
+- 正式 Supabase 公開讀取與私人表隔離：通過；舊的三個公開 policy 問題已修復。
+- 正式 Supabase 新回饋分頁 RPC：尚未部署，`verify:supabase` 目前正確回報 `PGRST202`。登入 mutation smoke 因本機沒有短效 token 尚未執行。
 
 ## 正式環境必要部署
 
-1. 若完整最新版 schema 已經套用，只需在 Supabase SQL Editor 執行 `server/db/migrations/20260813_fix_public_read_policies.sql`；若不確定版本，完整執行修正後的 `server/db/library-schema.sql`。兩者都使用 transaction，不會清空既有討論、標注或帳號資料。
-2. 執行 `npm run verify:supabase`；公開書評、標注、回覆應顯示 `OK`，私人表應顯示 `PROTECTED`。
-3. 重新部署／執行 `npm run build`，避免使用舊 `dist`。
-4. 有短效登入 token 時再執行 `npm run test:authenticated`，驗證建立標注、回覆、標注／回覆投票及復原流程。
+1. 在 Supabase SQL Editor 執行 `server/db/migrations/20260813_social_platform_audit.sql`。它只補 grant、RLS、索引與 RPC，不會清空既有討論、標注或帳號資料。
+2. 在本機專案目錄執行 `npm run verify:supabase`；公開表與新 RPC 應顯示 `OK`，私人表應顯示 `PROTECTED`。這個命令只讀檢查遠端 Supabase，不是在 SQL Editor 內執行。
+3. 重新部署目前程式碼；本機 `npm run build` 已成功，避免正式環境繼續使用舊 `dist`。
+4. 取得短效登入 token 後在本機執行 `npm run test:authenticated`，驗證所有實際 mutation。token 不可提交到 GitHub。

@@ -20,10 +20,12 @@ test("runtime starts with only the two existing NEXT_PUBLIC Supabase variables",
   await new Promise((resolve) => server.once("listening", resolve));
   try {
     const { port } = server.address();
-    const health = await fetch(`http://127.0.0.1:${port}/api/health`).then((response) => response.json());
+    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/health`);
+    const health = await healthResponse.json();
     const config = await fetch(`http://127.0.0.1:${port}/api/auth/config`).then((response) => response.json());
     assert.equal(health.status, "ok");
     assert.equal(health.catalogBooks, 200);
+    assert.match(healthResponse.headers.get("x-request-id"), /^[0-9a-f-]{36}$/i);
     assert.equal(config.supabaseUrl, process.env.NEXT_PUBLIC_SUPABASE_URL);
     assert.equal(config.supabasePublishableKey, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY);
   } finally {
@@ -36,13 +38,17 @@ test("runtime code has no secret-key dependency and database authorization is RL
   const appSource = fs.readFileSync(path.join(ROOT, "server", "app.js"), "utf8");
   const middlewareSource = fs.readFileSync(path.join(ROOT, "server", "middleware", "auth.js"), "utf8");
   const browserAuthSource = fs.readFileSync(path.join(ROOT, "public", "auth.js"), "utf8");
+  const browserApiSource = fs.readFileSync(path.join(ROOT, "public", "api.js"), "utf8");
   const schema = fs.readFileSync(path.join(ROOT, "server", "db", "library-schema.sql"), "utf8");
   const publicReadMigration = fs.readFileSync(path.join(ROOT, "server", "db", "migrations", "20260813_fix_public_read_policies.sql"), "utf8");
+  const socialAuditMigration = fs.readFileSync(path.join(ROOT, "server", "db", "migrations", "20260813_social_platform_audit.sql"), "utf8");
   const envExample = fs.readFileSync(path.join(ROOT, ".env.example"), "utf8");
   assert.doesNotMatch(`${appSource}\n${middlewareSource}\n${envExample}`, /SUPABASE_SERVICE|service_role|sb_secret/);
   assert.match(browserAuthSource, /redirectTo:\s*`\$\{location\.origin\}\/`/);
   assert.doesNotMatch(browserAuthSource, /redirectTo:[^\n]*localhost/);
   assert.match(appSource, /Authorization: `Bearer \$\{accessToken\}`/);
+  assert.match(appSource, /X-Request-Id/);
+  assert.match(browserApiSource, /error\.status === 401[\s\S]*refreshSession\(\)/);
   assert.match(schema, /create policy book_ratings_own_insert/i);
   assert.match(schema, /create policy book_annotations_visible_read/i);
   assert.match(schema, /create policy book_annotations_own_read[\s\S]*?to authenticated/i);
@@ -50,6 +56,8 @@ test("runtime code has no secret-key dependency and database authorization is RL
   assert.match(schema, /create policy book_annotations_visible_read[\s\S]*?visibility = 'public'/i);
   assert.doesNotMatch(schema, /create policy book_annotations_visible_read[\s\S]{0,240}library_user_is_active/i);
   assert.match(publicReadMigration, /begin;[\s\S]*book_annotations_visible_read[\s\S]*book_annotation_replies_own_read[\s\S]*commit;/i);
+  assert.match(socialAuditMigration, /begin;[\s\S]*anchor_offset_start[\s\S]*get_library_feedback_root_page[\s\S]*commit;/i);
+  assert.match(schema, /grant insert \(id, book_id, author_id, chapter_href, cfi_range, anchor_offset_start, anchor_offset_end, cluster_key, quote, content, visibility\) on public\.book_annotations to authenticated/i);
   assert.match(schema, /create policy library_notifications_own_read/i);
   assert.match(schema, /create policy library_user_settings_own_update/i);
   assert.match(schema, /create trigger library_notify_annotation_favorite/i);

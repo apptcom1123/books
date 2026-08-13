@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
 import { loadCatalog } from "./catalog.js";
@@ -57,6 +58,26 @@ export async function createApp({ serveStatic = false } = {}) {
     res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     next();
   });
+  app.use((req, res, next) => {
+    const incoming = String(req.headers["x-request-id"] || "");
+    req.requestId = /^[A-Za-z0-9_-]{8,80}$/.test(incoming) ? incoming : crypto.randomUUID();
+    const startedAt = performance.now();
+    res.setHeader("X-Request-Id", req.requestId);
+    res.on("finish", () => {
+      if (!req.path.startsWith("/api/")) return;
+      const durationMs = Math.round(performance.now() - startedAt);
+      if (res.statusCode >= 400 || durationMs >= 750) {
+        console.warn("API request", {
+          requestId: req.requestId,
+          method: req.method,
+          path: req.path,
+          status: res.statusCode,
+          durationMs,
+        });
+      }
+    });
+    next();
+  });
 
   if (serveStatic) {
     const dist = path.join(ROOT, "dist");
@@ -107,14 +128,17 @@ export async function createApp({ serveStatic = false } = {}) {
     const code = String(error.code || error.message || "INTERNAL_ERROR");
     const databaseStatus = code === "42501" ? 403
       : code === "PGRST205" ? 503
-        : ["23503", "23514", "22P02"].includes(code) ? 400 : null;
+        : code === "23505" ? 409
+          : ["23503", "23514", "22P02"].includes(code) ? 400 : null;
     const status = error.status || databaseStatus || (String(error.message).endsWith("NOT_FOUND") ? 404 : 500);
     const publicMessage = code === "42501"
       ? "資料權限未正確套用；請重新登入，若仍失敗請聯絡管理員。"
       : code === "PGRST205"
         ? "資料庫版本尚未完成更新，請聯絡管理員。"
-        : status >= 500 ? "服務暫時無法完成要求，請稍後再試。" : error.message;
-    res.status(status).json({ error: code, message: publicMessage });
+        : code === "23505"
+          ? "這項操作已經完成，不需要重複送出。"
+          : status >= 500 ? "服務暫時無法完成要求，請稍後再試。" : error.message;
+    res.status(status).json({ error: code, message: publicMessage, requestId: _req.requestId });
   });
   return app;
 }

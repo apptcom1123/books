@@ -18,14 +18,22 @@ test("reader feedback is a standalone searchable thread surface", () => {
   assert.doesNotMatch(homepage, /id="feedback-list"/);
   assert.match(page, /id="feedback-search"/);
   assert.match(page, /id="feedback-thread-dialog"/);
-  assert.match(script, /thread\.replies\.flatMap/);
-  assert.match(script, /terms\.every/);
+  assert.match(script, /feedbackPageEndpoint/);
+  assert.match(script, /beforeCreatedAt/);
+  assert.match(script, /cachedGet\(endpoint/);
+  assert.match(script, /onUpdate: \(updated\)/);
+  assert.match(script, /window\.addEventListener\("pagehide"/);
+  assert.match(script, /data-feedback-delete/);
   assert.match(script, /data-feedback-vote="up"/);
   assert.match(script, /data-feedback-vote="down"/);
   assert.doesNotMatch(script, /data-feedback-favorite/);
   assert.match(routes, /\/:feedbackId\/vote/);
+  assert.match(routes, /router\.delete\("\/:feedbackId"/);
+  assert.match(routes, /listFeedbackPage/);
   assert.match(schema, /create table if not exists public\.library_feedback_votes/);
   assert.match(schema, /create or replace function public\.get_library_feedback_vote_stats/);
+  assert.match(schema, /create function public\.get_library_feedback_root_page/);
+  assert.match(schema, /create policy library_feedback_own_update/);
 });
 
 test("annotation creation waits for an explicit selection action", () => {

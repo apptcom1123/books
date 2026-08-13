@@ -14,12 +14,20 @@ class LibraryApi {
       INVALID_ANNOTATION: "標注內容或文字位置不完整，請重新選取文字後再試。",
       INVALID_REPLY: "請先輸入回覆內容。",
       INVALID_FEEDBACK: "請先輸入討論或回覆內容。",
+      INVALID_FEEDBACK_PARENT: "回覆只能加入討論主題，不能再回覆另一則回覆。",
+      INVALID_FEEDBACK_THREAD: "討論連結格式不正確，請返回回饋列表重試。",
+      INVALID_FEEDBACK_ID: "討論內容識別碼不正確，請重新整理後再試。",
+      INVALID_FEEDBACK_LIMIT: "討論載入筆數不正確，請重新整理後再試。",
+      INVALID_FEEDBACK_CURSOR: "討論分頁位置已失效，請重新整理後再試。",
+      FEEDBACK_SEARCH_TOO_LONG: "搜尋文字最多 100 字。",
       INVALID_VOTE: "這次評價無法辨識，請重新操作。",
       ANNOTATION_NOT_FOUND: "這則標注已不存在，或你沒有查看權限。",
       REPLY_NOT_FOUND: "這則回覆已不存在，請重新整理討論串。",
       FEEDBACK_NOT_FOUND: "這段討論已不存在，請回到列表重新選擇。",
       USER_INACTIVE: "這個帳號目前無法進行互動，請聯絡管理員。",
+      ACCOUNT_DISABLED: "這個帳號目前無法進行互動，請聯絡管理員。",
       AUTH_REQUIRED: "請重新登入後再試。",
+      23505: "這項操作已經完成，不需要重複送出。",
     };
     if (known[code]) return known[code];
     if (code === "REQUEST_TIMEOUT") return "連線逾時，請檢查網路後重試。";
@@ -39,6 +47,7 @@ class LibraryApi {
     const maxRetries = method === "GET" ? Math.max(0, Math.min(options.retries ?? 2, 2)) : 0;
     let attempt = 0;
     let lastError = null;
+    let authRefreshAttempted = false;
 
     while (attempt <= maxRetries) {
       const controller = new AbortController();
@@ -66,6 +75,7 @@ class LibraryApi {
           keepalive: Boolean(options.keepalive),
         });
         const raw = await response.text();
+        const requestId = response.headers.get("x-request-id") || null;
         let result = {};
         try { result = raw ? JSON.parse(raw) : {}; } catch { result = {}; }
         const durationMs = Math.round(performance.now() - startedAt);
@@ -77,11 +87,13 @@ class LibraryApi {
           durationMs,
           payloadBytes: new TextEncoder().encode(raw).byteLength,
           attempt,
+          requestId,
         });
         if (!response.ok) {
           const error = new Error(this.userMessage(response.status, result.error, result.message));
           error.status = response.status;
           error.code = result.error;
+          error.requestId = result.requestId || requestId;
           error.retryable = response.status >= 500;
           throw error;
         }
@@ -100,6 +112,13 @@ class LibraryApi {
           error.retryable = true;
         }
         lastError = error;
+        if (error.status === 401 && !authRefreshAttempted && window.libraryAuth?.session) {
+          authRefreshAttempted = true;
+          try {
+            await window.libraryAuth.refreshSession();
+            continue;
+          } catch { /* final 401 below asks the reader to sign in again */ }
+        }
         const canRetry = method === "GET" && error.retryable && error.code !== "REQUEST_CANCELLED" && attempt < maxRetries;
         if (!canRetry) {
           this.emitMetric({
@@ -111,6 +130,15 @@ class LibraryApi {
             payloadBytes: 0,
             attempt,
             errorCode: error.code || "REQUEST_FAILED",
+            requestId: error.requestId || null,
+          });
+          console.warn("Library API request failed", {
+            endpoint,
+            method,
+            status: error.status || 0,
+            code: error.code || "REQUEST_FAILED",
+            requestId: error.requestId || null,
+            attempt,
           });
           throw error;
         }

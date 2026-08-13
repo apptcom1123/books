@@ -4,6 +4,8 @@ class LibraryAuth {
     this.session = null;
     this.user = null;
     this.lastUserId = null;
+    this.initialized = false;
+    this.refreshPromise = null;
     this.ready = this.initialize();
   }
 
@@ -40,6 +42,9 @@ class LibraryAuth {
       console.warn(error.message);
       this.emit();
     }
+    this.initialized = true;
+    document.documentElement.dataset.auth = this.user ? "authenticated" : "anonymous";
+    window.dispatchEvent(new CustomEvent("library-auth-ready", { detail: { user: this.user } }));
     return this;
   }
 
@@ -66,6 +71,7 @@ class LibraryAuth {
   }
 
   emit() {
+    document.documentElement.dataset.auth = this.initialized ? (this.user ? "authenticated" : "anonymous") : "checking";
     window.dispatchEvent(new CustomEvent("library-auth-changed", { detail: { user: this.user } }));
   }
 
@@ -99,8 +105,30 @@ class LibraryAuth {
     this.emit();
   }
 
-  async token() {
+  async refreshSession() {
     await this.ready;
+    if (!this.client) return null;
+    if (this.refreshPromise) return this.refreshPromise;
+    this.refreshPromise = (async () => {
+      const { data, error } = await this.client.auth.refreshSession();
+      if (error || !data.session) {
+        this.session = null;
+        this.user = null;
+        this.lastUserId = null;
+        window.libraryApi?.clearPrivateCache?.();
+        this.emit();
+        throw error || new Error("登入狀態已失效");
+      }
+      this.session = data.session;
+      await this.refreshProfile();
+      return this.session.access_token;
+    })().finally(() => { this.refreshPromise = null; });
+    return this.refreshPromise;
+  }
+
+  async token({ forceRefresh = false } = {}) {
+    await this.ready;
+    if (forceRefresh) return this.refreshSession();
     const { data } = this.client ? await this.client.auth.getSession() : { data: {} };
     this.session = data.session || null;
     return this.session?.access_token || null;

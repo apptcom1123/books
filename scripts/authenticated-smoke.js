@@ -46,6 +46,8 @@ let reviewId = null;
 let deletedReviewId = null;
 let annotationId = null;
 let replyId = null;
+let feedbackRootId = null;
+let feedbackReplyId = null;
 
 function check(condition, message) {
   if (!condition) throw new Error(message);
@@ -53,6 +55,8 @@ function check(condition, message) {
 
 async function cleanup() {
   const jobs = [];
+  if (feedbackReplyId) jobs.push(() => remove(`/feedback/${feedbackReplyId}`));
+  if (feedbackRootId) jobs.push(() => remove(`/feedback/${feedbackRootId}`));
   if (replyId) jobs.push(() => remove(`/annotation-replies/${replyId}`));
   if (annotationId) jobs.push(() => remove(`/annotations/${annotationId}`));
   if (reviewId) jobs.push(() => remove(`/reviews/${reviewId}`));
@@ -138,6 +142,8 @@ try {
   const annotationCreated = await post(`/books/${selectedBook.id}/annotations`, {
     chapterHref: "smoke-test.xhtml",
     cfiRange: "epubcfi(/6/2!/4/2:0)",
+    anchorOffsetStart: 10,
+    anchorOffsetEnd: 30,
     quote: "temporary smoke test",
     content: marker,
     visibility: "public",
@@ -167,6 +173,28 @@ try {
   await remove(`/annotations/${annotationId}`);
   annotationId = null;
   console.log("OK annotation create, edit, vote, save, reply vote and delete");
+
+  const feedbackCreated = await post("/feedback", { subject: marker, content: `${marker}-root` });
+  const ownRoot = feedbackCreated.messages?.find((message) => !message.parent_id && message.isOwner && message.content === `${marker}-root`);
+  feedbackRootId = ownRoot?.id || null;
+  check(feedbackRootId, "Feedback discussion was not created.");
+  const feedbackReplied = await post("/feedback", { parentId: feedbackRootId, content: `${marker}-reply` });
+  const ownFeedbackReply = feedbackReplied.messages?.find((message) => message.parent_id === feedbackRootId && message.isOwner && message.content === `${marker}-reply`);
+  feedbackReplyId = ownFeedbackReply?.id || null;
+  check(feedbackReplyId, "Feedback reply was not created.");
+  const feedbackVoted = await post(`/feedback/${feedbackReplyId}/vote`, { voteType: "up" });
+  const votedFeedbackReply = feedbackVoted.message;
+  check(votedFeedbackReply?.viewerVote === "up", "Feedback vote did not toggle on.");
+  const feedbackVoteRestored = await post(`/feedback/${feedbackReplyId}/vote`, { voteType: "none" });
+  const restoredFeedbackReply = feedbackVoteRestored.message;
+  check(!restoredFeedbackReply?.viewerVote, "Feedback vote did not restore.");
+  const feedbackSearch = await get(`/feedback?limit=24&q=${encodeURIComponent(marker)}`);
+  check(feedbackSearch.messages?.some((message) => message.id === feedbackRootId), "Feedback search did not return the new discussion.");
+  await remove(`/feedback/${feedbackReplyId}`);
+  feedbackReplyId = null;
+  await remove(`/feedback/${feedbackRootId}`);
+  feedbackRootId = null;
+  console.log("OK feedback discussion create, reply, vote, search and delete");
 
   const finalAccount = await get("/me");
   check(!(finalAccount.reviews || []).some((review) => review.id === deletedReviewId), "Temporary review remains active.");

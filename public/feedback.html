@@ -46,7 +46,7 @@
         <h1>每一則聲音，<br>都有自己的討論頁。</h1>
         <p>搜尋主旨、留言內容、作者或任何一則回覆。選取結果後，完整討論會在浮動視窗展開。</p>
       </div>
-      <button id="new-feedback-button" class="feedback-new" type="button">＋ 提出新回饋</button>
+      <button id="new-feedback-button" class="feedback-new" type="button" disabled aria-busy="true">正在確認登入狀態…</button>
     </section>
 
     <section class="feedback-workspace" aria-labelledby="feedback-heading">
@@ -60,6 +60,7 @@
       </div>
       <p id="feedback-result-summary" class="feedback-result-summary" aria-live="polite">正在取回討論…</p>
       <div id="feedback-list" class="feedback-cards" aria-live="polite"></div>
+      <div id="feedback-load-more-wrap" class="feedback-load-more" hidden><button id="feedback-load-more" class="button button-quiet" type="button">載入更多討論</button></div>
       <div id="feedback-empty" class="feedback-empty" hidden><span>⌕</span><h3>找不到相符討論</h3><p>試著減少關鍵字，搜尋也會包含所有回覆內容。</p></div>
     </section>
   </main>

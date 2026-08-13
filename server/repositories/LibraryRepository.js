@@ -555,22 +555,11 @@ export class LibraryRepository {
     };
   }
 
-  async listFeedback(userId = null, rootId = null) {
-    let query = this.db
-      .from("library_feedback")
-      .select("id,parent_id,author_id,book_id,subject,content,status,created_at,updated_at")
-      .eq("status", "active")
-      .order("created_at", { ascending: false })
-      .limit(200);
-    if (rootId) query = query.or(`id.eq.${rootId},parent_id.eq.${rootId}`);
-    const { data, error } = await query;
-    if (error) throw error;
-    const rows = data || [];
+  async hydrateFeedback(rows, userId = null) {
+    if (!rows.length) return [];
     const [profiles, voteStatsResult] = await Promise.all([
       this.userRepository.publicProfiles(rows.map((row) => row.author_id)),
-      rows.length
-        ? this.db.rpc("get_library_feedback_vote_stats", { p_feedback_ids: rows.map((row) => row.id) })
-        : Promise.resolve({ data: [], error: null }),
+      this.db.rpc("get_library_feedback_vote_stats", { p_feedback_ids: rows.map((row) => row.id) }),
     ]);
     if (voteStatsResult.error) throw voteStatsResult.error;
     const voteStats = byKey(voteStatsResult.data || [], "feedback_id");
@@ -586,6 +575,59 @@ export class LibraryRepository {
         viewerVote: interaction.viewer_vote || null,
       };
     });
+  }
+
+  async listFeedback(userId = null, rootId = null) {
+    let query = this.db
+      .from("library_feedback")
+      .select("id,parent_id,author_id,book_id,subject,content,status,created_at,updated_at")
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(rootId ? 500 : 200);
+    if (rootId) query = query.or(`id.eq.${rootId},parent_id.eq.${rootId}`);
+    const { data, error } = await query;
+    if (error) throw error;
+    return this.hydrateFeedback(data || [], userId);
+  }
+
+  async listFeedbackPage(userId = null, { limit = 24, beforeCreatedAt = null, beforeId = null, search = "" } = {}) {
+    const pageSize = Math.max(1, Math.min(50, Number(limit) || 24));
+    const { data: summaries, error: summaryError } = await this.db.rpc("get_library_feedback_root_page", {
+      p_limit: pageSize + 1,
+      p_before_created_at: beforeCreatedAt,
+      p_before_id: beforeId,
+      p_search: cleanText(search, 100) || null,
+    });
+    if (summaryError) throw summaryError;
+    const summaryRows = summaries || [];
+    const hasMore = summaryRows.length > pageSize;
+    const pageSummaries = summaryRows.slice(0, pageSize);
+    const ids = pageSummaries.map((row) => row.root_id);
+    if (!ids.length) return { messages: [], hasMore: false, cursor: null };
+
+    const { data, error } = await this.db.from("library_feedback")
+      .select("id,parent_id,author_id,book_id,subject,content,status,created_at,updated_at")
+      .in("id", ids).eq("status", "active").is("parent_id", null);
+    if (error) throw error;
+    const hydrated = await this.hydrateFeedback(data || [], userId);
+    const byId = new Map(hydrated.map((row) => [row.id, row]));
+    const summaryById = new Map(pageSummaries.map((row) => [row.root_id, row]));
+    const messages = ids.map((id) => {
+      const row = byId.get(id);
+      const summary = summaryById.get(id);
+      return row ? {
+        ...row,
+        replyCount: number(summary.reply_count),
+        latestReplyContent: summary.latest_reply_content || null,
+        latestActivityAt: summary.latest_activity_at || row.created_at,
+      } : null;
+    }).filter(Boolean);
+    const last = messages.at(-1);
+    return {
+      messages,
+      hasMore,
+      cursor: hasMore && last ? { beforeCreatedAt: last.created_at, beforeId: last.id } : null,
+    };
   }
 
   async voteFeedback(feedbackId, userId, voteType) {
@@ -611,8 +653,9 @@ export class LibraryRepository {
     if (!content) throw Object.assign(new Error("INVALID_FEEDBACK"), { status: 400 });
     if (input.bookId) this.requireBook(input.bookId);
     if (input.parentId) {
-      const { data: parent, error } = await this.db.from("library_feedback").select("id").eq("id", input.parentId).eq("status", "active").single();
+      const { data: parent, error } = await this.db.from("library_feedback").select("id,parent_id").eq("id", input.parentId).eq("status", "active").single();
       if (error || !parent) throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
+      if (parent.parent_id) throw Object.assign(new Error("INVALID_FEEDBACK_PARENT"), { status: 400 });
     }
     const id = crypto.randomUUID();
     const rootId = input.parentId || id;
@@ -628,5 +671,15 @@ export class LibraryRepository {
     // Return only the affected thread. The browser can merge this stable,
     // server-authoritative slice without downloading every discussion again.
     return this.listFeedback(userId, rootId);
+  }
+
+  async deleteFeedback(feedbackId, userId) {
+    const { data, error } = await this.db.from("library_feedback")
+      .update({ status: "deleted", updated_at: new Date().toISOString() })
+      .eq("id", feedbackId).eq("author_id", userId).eq("status", "active")
+      .select("id,parent_id").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
+    return { id: data.id, rootId: data.parent_id || data.id };
   }
 }
