@@ -10,6 +10,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 test("personal center ships the expected management surfaces", () => {
   const html = fs.readFileSync(path.join(ROOT, "public", "account.html"), "utf8");
   const script = fs.readFileSync(path.join(ROOT, "public", "account.js"), "utf8");
+  const routes = fs.readFileSync(path.join(ROOT, "server", "routes", "account.js"), "utf8");
+  const repository = fs.readFileSync(path.join(ROOT, "server", "repositories", "UserRepository.js"), "utf8");
   const home = fs.readFileSync(path.join(ROOT, "public", "index.html"), "utf8");
   for (const id of ["favorite-books", "reading-books", "my-reviews", "my-annotations", "my-replies", "saved-annotations", "notification-list", "notification-settings-form"]) {
     assert.match(html, new RegExp(`id=["']${id}["']`));
@@ -18,6 +20,14 @@ test("personal center ships the expected management surfaces", () => {
   assert.match(script, /\/me\/notifications\/read-all/);
   assert.match(script, /notifyAnnotationFavorites/);
   assert.match(script, /data-delete-annotation/);
+  assert.match(html, /id="account-loading-message"/);
+  assert.match(html, /id="notify-all-interactions"/);
+  assert.match(script, /function setAccountView/);
+  assert.match(script, /setAccountView\("ready"\)/);
+  assert.match(script, /data-notification-delete/);
+  assert.match(routes, /router\.delete\("\/notifications\/:notificationId"/);
+  assert.match(repository, /async notifications\(userId, limit = 30\)/);
+  assert.match(repository, /async deleteNotification/);
 });
 
 test("personal center API rejects anonymous access", async () => {

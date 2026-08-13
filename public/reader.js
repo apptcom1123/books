@@ -37,6 +37,7 @@ const readerState = {
   annotationRealtimeStop: null,
   annotationRefreshTimer: null,
   annotationThreshold: 50,
+  annotationThresholdSaveTimer: null,
   annotationRequestId: 0,
   pendingProgress: null,
   progressSavedOnce: false,
@@ -46,6 +47,7 @@ const readerState = {
   replySort: "best",
   replyParentId: null,
   replyDrafts: new Map(),
+  expandedReplyNotes: new Set(),
   annotationMutationPending: new Set(),
   bubbleTap: { id: null, at: 0 },
   theme: "publisher",
@@ -450,27 +452,40 @@ function visibleBubbleNotes() {
   const clusters = annotationClusters();
   const privateClusters = clusters.filter((cluster) => cluster.visibility === "private");
   const publicClusters = clusters.filter((cluster) => cluster.visibility === "public");
-  if (readerState.annotationThreshold <= 0) return [...privateClusters, ...publicClusters].sort(compareAnnotationClusters);
-
-  const regions = new Map();
-  for (const cluster of publicClusters) {
-    const regionIndex = cluster.clusterIndex === null
-      ? `legacy:${cluster.key}`
-      : Math.floor(cluster.clusterIndex / PUBLIC_ANNOTATION_RANK_WINDOW);
-    const key = `${cluster.chapter}::${regionIndex}`;
-    if (!regions.has(key)) regions.set(key, []);
-    regions.get(key).push(cluster);
+  let selected = publicClusters;
+  if (readerState.annotationThreshold >= 100) selected = [];
+  else if (readerState.annotationThreshold > 0) {
+    const regions = new Map();
+    for (const cluster of publicClusters) {
+      const regionIndex = cluster.clusterIndex === null
+        ? `legacy:${cluster.key}`
+        : Math.floor(cluster.clusterIndex / PUBLIC_ANNOTATION_RANK_WINDOW);
+      const key = `${cluster.chapter}::${regionIndex}`;
+      if (!regions.has(key)) regions.set(key, []);
+      regions.get(key).push(cluster);
+    }
+    selected = [];
+    for (const region of regions.values()) {
+      const ordered = [...region].sort((a, b) => b.score - a.score
+        || b.upCount - a.upCount
+        || b.newest - a.newest
+        || a.start - b.start);
+      const visibleCount = Math.ceil(ordered.length * (100 - readerState.annotationThreshold) / 100);
+      selected.push(...ordered.slice(0, visibleCount));
+    }
   }
-  const selected = [];
-  for (const region of regions.values()) {
-    const ordered = [...region].sort((a, b) => b.score - a.score
-      || b.upCount - a.upCount
-      || b.newest - a.newest
-      || a.start - b.start);
-    const visibleCount = Math.max(1, Math.ceil(ordered.length * (100 - readerState.annotationThreshold) / 100));
-    const cutoff = ordered[Math.min(visibleCount, ordered.length) - 1];
-    selected.push(...ordered.filter((cluster) => cluster.score > cutoff.score
-      || (cluster.score === cutoff.score && cluster.upCount >= cutoff.upCount)));
+  if (window.matchMedia("(max-width: 700px)").matches && selected.length > 4) {
+    const score = (cluster) => {
+      let hash = 2166136261;
+      for (const character of `${bookId}:${readerState.annotationThreshold}:${cluster.key}`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+      return hash >>> 0;
+    };
+    const chapters = new Map();
+    for (const cluster of selected) {
+      if (!chapters.has(cluster.chapter)) chapters.set(cluster.chapter, []);
+      chapters.get(cluster.chapter).push(cluster);
+    }
+    selected = [...chapters.values()].flatMap((chapter) => [...chapter].sort((a, b) => score(a) - score(b)).slice(0, 4));
   }
   return [...privateClusters, ...selected].sort(compareAnnotationClusters);
 }
@@ -570,18 +585,32 @@ function annotationReplyMarkup(reply, depth = 0) {
 
 function annotationThreadCard(note) {
   const replies = annotationReplyTree(note.replies || []);
+  const compactReplies = window.matchMedia("(max-width: 700px)").matches
+    && !readerState.expandedReplyNotes.has(note.id) && (note.replies?.length || 0) > 2;
+  const visibleReplies = compactReplies
+    ? [...(note.replies || [])].sort(compareReplies).slice(0, 2).map((reply) => ({ ...reply, children: [] }))
+    : replies;
   const parentReply = readerState.replyParentId ? note.replies?.find((reply) => reply.id === readerState.replyParentId) : null;
   const votePending = readerState.annotationMutationPending.has(`note-vote:${note.id}`);
   const favoritePending = readerState.annotationMutationPending.has(`note-favorite:${note.id}`);
   const replyPending = readerState.annotationMutationPending.has(`note-reply:${note.id}`);
   const replyDraft = readerState.replyDrafts.get(note.id) || "";
   return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
-    <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
-    ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
-    <p>${escapeHtml(note.content)}</p>
-    <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}"${votePending ? " disabled" : ""}>▲ ${Number(note.upCount) || 0}</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}"${votePending ? " disabled" : ""}>▼ ${Number(note.downCount) || 0}</button><span>淨分 ${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}"${favoritePending ? " disabled" : ""}>${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
-    <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div>${replies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>
+    <div class="thread-note-layout">
+      <div class="note-vote-rail" role="group" aria-label="標注評價">
+        <button type="button" class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞，目前 ${Number(note.upCount) || 0} 票"${votePending ? " disabled" : ""}>▲</button>
+        <strong aria-label="淨分 ${note.score >= 0 ? "+" : ""}${note.score}">${note.score >= 0 ? "+" : ""}${note.score}</strong>
+        <button type="button" class="down ${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不讚同，目前 ${Number(note.downCount) || 0} 票"${votePending ? " disabled" : ""}>▼</button>
+      </div>
+      <div class="thread-note-body">
+        <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
+        ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
+        <p>${escapeHtml(note.content)}</p>
+        <div class="note-actions">${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}"${favoritePending ? " disabled" : ""}>${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
+      </div>
+    </div>
     <form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" value="${escapeHtml(replyDraft)}" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>
+    <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div><div class="thread-replies-list">${visibleReplies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>${compactReplies ? `<button class="thread-replies-expand" type="button" data-toggle-replies="${note.id}">查看全部 ${note.replies.length} 則回覆</button>` : ""}</div>
   </article>`;
 }
 
@@ -643,7 +672,38 @@ async function loadAnnotations() {
 function renderAnnotationState() {
   renderAnnotationBubbles();
   const dialog = document.getElementById("annotation-thread-dialog");
-  if (readerState.activeThreadNoteId && dialog?.open) openAnnotationThread(readerState.activeThreadNoteId);
+  if (readerState.activeThreadNoteId && dialog?.open) {
+    const scrollTop = dialog.scrollTop;
+    openAnnotationThread(readerState.activeThreadNoteId);
+    dialog.scrollTop = scrollTop;
+  }
+}
+
+async function saveAnnotationThreshold() {
+  if (!window.libraryAuth.user) return;
+  try {
+    await window.libraryApi.patch("/me/settings", { annotationVisibilityThreshold: readerState.annotationThreshold });
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+async function syncAnnotationThreshold(user = window.libraryAuth.user) {
+  let threshold = Number(localStorage.getItem("mystery-library:annotation-threshold") ?? 50);
+  if (user) {
+    try {
+      const result = await window.libraryApi.get("/me/settings");
+      threshold = Number(result.settings.annotationVisibilityThreshold ?? 50);
+      localStorage.setItem("mystery-library:annotation-threshold", String(threshold));
+    } catch (error) {
+      console.warn("Unable to load annotation threshold.", error);
+    }
+  }
+  if (!Number.isFinite(threshold)) threshold = 50;
+  readerState.annotationThreshold = Math.max(0, Math.min(100, threshold));
+  document.getElementById("annotation-threshold").value = String(readerState.annotationThreshold);
+  document.getElementById("annotation-threshold-output").value = `${readerState.annotationThreshold}%`;
+  renderAnnotationBubbles();
 }
 
 function replaceAnnotation(updated) {
@@ -843,10 +903,10 @@ function wireControls() {
     document.getElementById("annotation-threshold-output").value = `${readerState.annotationThreshold}%`;
     localStorage.setItem("mystery-library:annotation-threshold", String(readerState.annotationThreshold));
     renderAnnotationBubbles();
+    clearTimeout(readerState.annotationThresholdSaveTimer);
+    readerState.annotationThresholdSaveTimer = setTimeout(saveAnnotationThreshold, 400);
   });
-  threshold.addEventListener("change", () => {
-    if (window.libraryAuth.user) window.libraryApi.patch("/me/settings", { annotationVisibilityThreshold: readerState.annotationThreshold }).catch(() => {});
-  });
+  threshold.addEventListener("change", () => { clearTimeout(readerState.annotationThresholdSaveTimer); void saveAnnotationThreshold(); });
   document.getElementById("annotation-form").addEventListener("submit", submitAnnotation);
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
   document.getElementById("annotation-thread-previous").addEventListener("click", () => turnAnnotationThread(-1));
@@ -871,6 +931,8 @@ function wireControls() {
     if (form && event.target.matches("input")) readerState.replyDrafts.set(form.dataset.replyForm, event.target.value);
   });
   document.getElementById("annotation-thread-content").addEventListener("click", (event) => {
+    const toggleReplies = event.target.closest("[data-toggle-replies]");
+    if (toggleReplies) { readerState.expandedReplyNotes.add(toggleReplies.dataset.toggleReplies); renderAnnotationState(); return; }
     const vote = event.target.closest("[data-note-vote]");
     if (vote) { voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
     const favorite = event.target.closest("[data-note-favorite]");
@@ -902,7 +964,7 @@ function wireControls() {
   document.getElementById("annotation-thread-content").addEventListener("submit", async (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); const button = form.querySelector('button[type="submit"]'); if (!input.value.trim()) return; input.disabled = true; button.disabled = true; const sent = await replyAnnotation(form.dataset.replyForm, input.value, form.dataset.parentReplyId || null); if (!sent && form.isConnected) { input.disabled = false; button.disabled = false; input.focus(); } });
   document.getElementById("annotation-thread-dialog").addEventListener("close", () => { readerState.activeThreadNoteId = null; readerState.replyParentId = null; readerState.threadSwipe = null; });
   document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) location.href = "/account.html"; else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
-  window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; if (readerState.rendition) { loadAnnotations(); if (event.detail.user) persistProgress(); } });
+  window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; void syncAnnotationThreshold(event.detail.user); if (readerState.rendition) { loadAnnotations(); if (event.detail.user) persistProgress(); } });
   window.addEventListener("focus", () => { if (readerState.rendition) loadAnnotations(); });
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") persistProgress({ keepalive: true }); });
   window.addEventListener("pagehide", () => { persistProgress({ keepalive: true }); });
@@ -917,21 +979,11 @@ async function initialize() {
   try {
     await window.libraryAuth.ready;
     document.getElementById("reader-login").textContent = window.libraryAuth.user ? "書房" : "登入";
+    await syncAnnotationThreshold(window.libraryAuth.user);
     const record = await loadBookRecord();
     await initializeEpub(record);
     await loadAnnotations();
     applyReaderTheme(readerState.theme);
-    const savedThreshold = localStorage.getItem("mystery-library:annotation-threshold");
-    readerState.annotationThreshold = Math.max(0, Math.min(100, Number(savedThreshold ?? 50)));
-    if (window.libraryAuth.user) {
-      try {
-        const result = await window.libraryApi.get("/me/settings");
-        if (savedThreshold == null) readerState.annotationThreshold = Number(result.settings.annotationVisibilityThreshold ?? 50);
-      } catch {}
-    }
-    document.getElementById("annotation-threshold").value = String(readerState.annotationThreshold);
-    document.getElementById("annotation-threshold-output").value = `${readerState.annotationThreshold}%`;
-    renderAnnotationBubbles();
     syncAnnotationRealtime(true);
   } catch (error) {
     console.error(error);

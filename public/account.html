@@ -27,8 +27,9 @@
 
   <main class="account-shell">
     <section id="account-loading" class="account-loading" role="status" aria-live="polite">
-      <div class="account-loading-card skeleton" aria-hidden="true"></div>
-      <p>正在確認登入狀態…</p>
+      <div id="account-loading-card" class="account-loading-card skeleton" aria-hidden="true"></div>
+      <p id="account-loading-message">正在確認登入狀態…</p>
+      <button id="account-retry" class="button button-dark" type="button" hidden>重新載入</button>
     </section>
     <section id="account-gate" class="account-gate" hidden>
       <span class="gate-mark">謎</span>
@@ -83,7 +84,7 @@
       <section class="account-panel" data-account-panel="notifications" hidden>
         <div class="panel-title"><div><p class="eyebrow">INBOX</p><h2>互動通知</h2></div><button id="mark-all-read" class="button button-quiet" type="button">全部標為已讀</button></div>
         <p id="realtime-health" class="realtime-health" role="status"><i></i><span>正在建立即時連線…</span></p>
-        <p class="panel-note">當其他讀者回覆、讚賞或收藏你的公開內容時，通知會出現在這裡。</p>
+        <p class="panel-note">當其他讀者回覆、讚賞或收藏你的公開內容時，通知會出現在這裡；最多保留顯示最新 30 則。</p>
         <div id="notification-list" class="notification-list"></div>
       </section>
 
@@ -98,6 +99,7 @@
           </form>
           <form id="notification-settings-form" class="settings-card">
             <h3>通知訂閱</h3><p>關閉後只停止建立之後的新通知，不會刪除既有通知。</p>
+            <label class="toggle-row toggle-row-master"><span><strong>全部互動通知</strong><small>同意接收下列所有互動類型</small></span><input id="notify-all-interactions" type="checkbox"></label>
             <label class="toggle-row"><span><strong>標注收到回覆</strong><small>有人接續你的推論或問題</small></span><input id="notify-annotation-replies" type="checkbox"></label>
             <label class="toggle-row"><span><strong>標注收到讚賞</strong><small>有人對你的公開標注按讚</small></span><input id="notify-annotation-likes" type="checkbox"></label>
             <label class="toggle-row"><span><strong>標注被收藏</strong><small>有人把你的公開標注收入書房</small></span><input id="notify-annotation-favorites" type="checkbox"></label>
@@ -115,7 +117,6 @@
     <form id="activity-form" method="dialog">
       <div class="dialog-head"><div><p class="eyebrow">EDIT</p><h2 id="activity-dialog-title">編輯內容</h2></div><button class="icon-close" type="button" data-activity-close aria-label="關閉">×</button></div>
       <input id="activity-kind" type="hidden"><input id="activity-id" type="hidden"><input id="activity-book-id" type="hidden">
-      <div id="activity-rating-wrap" class="edit-rating" hidden><span>評分</span><div id="activity-rating"></div></div>
       <label>內容<textarea id="activity-content-input" maxlength="4000" rows="7" required></textarea></label>
       <label id="activity-visibility-wrap" class="visibility-choice" hidden><input id="activity-public" type="checkbox"><span>公開給所有讀者</span></label>
       <div class="dialog-actions"><button class="button button-quiet" type="button" data-activity-close>取消</button><button class="button button-dark" type="submit">儲存修改</button></div>

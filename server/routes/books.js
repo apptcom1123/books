@@ -122,14 +122,9 @@ router.get("/:bookId/reviews", async (req, res, next) => {
 
 router.put("/:bookId/review", requireAuth, async (req, res, next) => {
   try {
-    const rating = Number(req.body?.rating);
     const content = String(req.body?.content || "").trim();
-    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
-      return res.status(400).json({ error: "INVALID_RATING", message: "發表評論時請選擇 1 到 5 顆星。" });
-    }
     if (!content) return res.status(400).json({ error: "INVALID_REVIEW", message: "請輸入評論內容。" });
-    await req.repositories.library.setRating(req.params.bookId, req.user.userId, rating);
-    const review = await req.repositories.library.saveReview(req.params.bookId, req.user.userId, { ...req.body, content });
+    const review = await req.repositories.library.saveReview(req.params.bookId, req.user.userId, { content });
     const book = await req.repositories.library.getBook(req.params.bookId, req.user.userId);
     res.json({ success: true, review, metrics: book.metrics, viewer: book.viewer });
   } catch (error) {

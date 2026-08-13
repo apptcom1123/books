@@ -69,7 +69,7 @@ export class UserRepository {
     return data;
   }
 
-  async notifications(userId, limit = 60) {
+  async notifications(userId, limit = 30) {
     const { data, error } = await this.db.from("library_notifications").select(NOTIFICATION_COLUMNS)
       .eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
     if (error) throw error;
@@ -78,7 +78,7 @@ export class UserRepository {
 
   async notificationSummary(userId) {
     const { data, error } = await this.db.from("library_notifications").select("id,read_at")
-      .eq("user_id", userId).order("created_at", { ascending: false }).limit(200);
+      .eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
     if (error) throw error;
     const rows = data || [];
     return { total: rows.length, unread: rows.filter((row) => !row.read_at).length };
@@ -96,5 +96,12 @@ export class UserRepository {
     const { error } = await this.db.from("library_notifications")
       .update({ read_at: new Date().toISOString() }).eq("user_id", userId).is("read_at", null);
     if (error) throw error;
+  }
+
+  async deleteNotification(userId, notificationId) {
+    const { data, error } = await this.db.from("library_notifications").delete()
+      .eq("id", notificationId).eq("user_id", userId).select("id").maybeSingle();
+    if (error) throw error;
+    if (!data) throw Object.assign(new Error("NOTIFICATION_NOT_FOUND"), { status: 404 });
   }
 }

@@ -52,6 +52,7 @@ test("annotation creation waits for an explicit selection action", () => {
 test("annotation bubbles aggregate five-position local threads with ranked realtime replies", () => {
   const html = read("public/reader.html");
   const script = read("public/reader.js");
+  const css = read("public/reader.css");
   const routes = read("server/routes/annotations.js");
   const repository = read("server/repositories/LibraryRepository.js");
   const schema = read("server/db/library-schema.sql");
@@ -75,6 +76,12 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(script, /annotation-thread-previous/);
   assert.match(script, /annotation-thread-next/);
   assert.match(script, /threadContent\.addEventListener\("pointerup"/);
+  assert.match(script, /note-vote-rail/);
+  assert.match(css, /\.note-vote-rail[^{]*\{/);
+  assert.match(css, /\.thread-reply-form[^}]*position:sticky/);
+  assert.match(script, /data-toggle-replies/);
+  assert.match(script, /setTimeout\(saveAnnotationThreshold, 400\)/);
+  assert.match(script, /await window\.libraryApi\.patch\("\/me\/settings"/);
   assert.doesNotMatch(html, /annotation-thread-rank/);
   assert.doesNotMatch(script, /起始位置第/);
   assert.match(script, /data-reply-sort="best"/);
@@ -96,6 +103,35 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(schema, /returns table \(reply_id text, score bigint, up_count bigint, down_count bigint, viewer_vote text\)/);
   assert.match(schema, /parent\.annotation_id = p_annotation_id/);
   assert.match(schema, /tg_table_name = 'book_annotation_votes'[\s\S]*?v_visibility = 'private'/);
+});
+
+test("text reviews stay separate from book star ratings and mobile lists stay compact", () => {
+  const html = read("public/index.html");
+  const app = read("public/app.js");
+  const account = read("public/account.html");
+  const routes = read("server/routes/books.js");
+  const smoke = read("scripts/authenticated-smoke.js");
+  assert.doesNotMatch(html, /id="review-rating"/);
+  assert.doesNotMatch(account, /id="activity-rating"/);
+  assert.match(app, /function stableSocialSample/);
+  assert.match(app, /data-review-expand/);
+  assert.doesNotMatch(app, /reviewRating/);
+  assert.doesNotMatch(routes, /發表評論時請選擇/);
+  assert.doesNotMatch(routes, /router\.put\("\/:bookId\/review"[\s\S]{0,700}\.setRating/);
+  assert.match(smoke, /\/review`, \{ content: marker \}/);
+});
+
+test("source dossiers reveal once without making JavaScript a visibility dependency", () => {
+  const html = read("public/index.html");
+  const app = read("public/app.js");
+  const css = read("public/styles.css");
+  assert.match(html, /id="source-info"[^>]*data-source-reveal/);
+  assert.match(app, /function initializeSourceReveal/);
+  assert.match(app, /new IntersectionObserver/);
+  assert.match(app, /observer\.disconnect\(\)/);
+  assert.match(css, /source-reveal-ready:not\(\.is-revealed\)/);
+  assert.match(css, /prefers-reduced-motion: reduce/);
+  assert.doesNotMatch(html, /source-reveal-ready/);
 });
 
 test("annotation cluster keys are derived from trusted five-position offsets", async () => {

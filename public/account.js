@@ -1,4 +1,5 @@
-const accountState = { data: null, editRating: 0, loading: false, notificationRealtimeStop: null, notificationRealtimeUserId: null, notificationRefreshTimer: null };
+const accountState = { data: null, loading: false, loadingRequestId: 0, authRequestId: 0, thresholdSaveTimer: null, notificationRealtimeStop: null, notificationRealtimeUserId: null, notificationRefreshTimer: null };
+const NOTIFICATION_SETTING_IDS = ["notify-annotation-replies", "notify-annotation-likes", "notify-annotation-favorites", "notify-review-likes", "notify-feedback-replies"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -38,7 +39,7 @@ function bookTile(entry, mode = "favorite") {
 
 function reviewCard(review, compact = false, saved = false) {
   return `<article class="activity-card">
-    <div class="activity-card-head"><div><h4><a href="/?review=${encodeURIComponent(review.book_id)}#collection">${escapeHtml(review.book.title_zh)}</a></h4><span class="activity-meta">${"★".repeat(review.book.viewer?.rating || 0)}${"☆".repeat(5 - (review.book.viewer?.rating || 0))} ・ ${review.likeCount} 人讚賞</span></div><time class="activity-meta">${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
+    <div class="activity-card-head"><div><h4><a href="/?review=${encodeURIComponent(review.book_id)}#collection">${escapeHtml(review.book.title_zh)}</a></h4><span class="activity-meta">${review.likeCount} 人讚賞</span></div><time class="activity-meta">${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
     <p>${escapeHtml(compact ? review.content.slice(0, 150) : review.content)}${compact && review.content.length > 150 ? "…" : ""}</p>
     ${compact ? "" : `<div class="activity-actions">${saved ? `<a class="mini-action" href="/?review=${encodeURIComponent(review.book_id)}#collection">查看評論</a><button class="mini-action danger" type="button" data-unsave-review="${review.id}">移出收藏</button>` : `<button class="mini-action" type="button" data-edit-review="${review.id}">編輯</button><button class="mini-action danger" type="button" data-delete-review="${review.id}">刪除</button>`}</div>`}
   </article>`;
@@ -64,11 +65,14 @@ function notificationLink(notification) {
 }
 
 function notificationCard(notification) {
-  return `<article class="notification-card${notification.read_at ? "" : " unread"}" tabindex="0" role="link" data-notification-id="${notification.id}" data-notification-link="${escapeHtml(notificationLink(notification))}"><p>${escapeHtml(notification.message)}</p><time>${new Date(notification.created_at).toLocaleString("zh-TW")}</time></article>`;
+  return `<article class="notification-card${notification.read_at ? "" : " unread"}">
+    <button class="notification-open" type="button" data-notification-open="${notification.id}" data-notification-link="${escapeHtml(notificationLink(notification))}"><span>${escapeHtml(notification.message)}</span><time>${new Date(notification.created_at).toLocaleString("zh-TW")}</time></button>
+    <button class="notification-delete" type="button" data-notification-delete="${notification.id}" aria-label="刪除這則通知">刪除</button>
+  </article>`;
 }
 
 function renderNotifications() {
-  const notifications = accountState.data?.notifications || [];
+  const notifications = (accountState.data?.notifications || []).slice(0, 30);
   $("overview-notifications").innerHTML = notifications.length ? notifications.slice(0, 4).map(notificationCard).join("") : empty("目前沒有通知。");
   $("notification-list").innerHTML = notifications.length ? notifications.map(notificationCard).join("") : empty("目前沒有通知。");
   const unread = notifications.filter((notification) => !notification.read_at).length;
@@ -106,19 +110,30 @@ function renderAccount() {
     ["notify-annotation-favorites", "notifyAnnotationFavorites"], ["notify-review-likes", "notifyReviewLikes"],
     ["notify-feedback-replies", "notifyFeedbackReplies"],
   ]) $(id).checked = Boolean(data.settings[key]);
+  const allNotifications = $("notify-all-interactions");
+  const enabledCount = NOTIFICATION_SETTING_IDS.filter((id) => $(id).checked).length;
+  allNotifications.checked = enabledCount === NOTIFICATION_SETTING_IDS.length;
+  allNotifications.indeterminate = enabledCount > 0 && enabledCount < NOTIFICATION_SETTING_IDS.length;
   $("account-annotation-threshold").value = String(data.settings.annotationVisibilityThreshold ?? 50);
   $("account-threshold-output").value = `${data.settings.annotationVisibilityThreshold ?? 50}%`;
 }
 
-async function loadAccount() {
-  if (accountState.loading || !window.libraryAuth.user) return;
+async function loadAccount(requestId = accountState.authRequestId) {
+  if ((accountState.loading && accountState.loadingRequestId === requestId) || !window.libraryAuth.user) return Boolean(accountState.data);
   accountState.loading = true;
+  accountState.loadingRequestId = requestId;
   try {
-    accountState.data = await window.libraryApi.get("/me");
+    const data = await window.libraryApi.get("/me");
+    if (requestId !== accountState.authRequestId || !window.libraryAuth.user) return false;
+    accountState.data = data;
     renderAccount();
+    return true;
   } catch (error) {
     toast(error.message, "error");
-  } finally { accountState.loading = false; }
+    return false;
+  } finally {
+    if (accountState.loadingRequestId === requestId) accountState.loading = false;
+  }
 }
 
 async function refreshNotifications() {
@@ -169,19 +184,13 @@ function showTab(tab) {
   history.replaceState(null, "", `#${selected}`);
 }
 
-function renderEditRating() {
-  $("activity-rating").innerHTML = Array.from({ length: 5 }, (_, index) => `<button class="${index < accountState.editRating ? "active" : ""}" type="button" data-edit-rating="${index + 1}" aria-label="${index + 1} 顆星">★</button>`).join("");
-}
-
 function openActivityDialog(kind, item) {
   $("activity-kind").value = kind;
   $("activity-id").value = item.id;
   $("activity-book-id").value = item.book_id;
   $("activity-content-input").value = item.content;
   $("activity-dialog-title").textContent = kind === "review" ? `編輯《${item.book.title_zh}》書評` : `編輯《${item.book.title_zh}》標注`;
-  $("activity-rating-wrap").hidden = kind !== "review";
   $("activity-visibility-wrap").hidden = kind !== "annotation";
-  if (kind === "review") { accountState.editRating = item.book.viewer?.rating || 0; renderEditRating(); }
   if (kind === "annotation") $("activity-public").checked = item.visibility === "public";
   $("activity-dialog").showModal();
 }
@@ -199,9 +208,18 @@ async function loadAccountAfterMutation() {
 
 async function openNotification(card) {
   try {
-    if (card.classList.contains("unread")) await window.libraryApi.patch(`/me/notifications/${card.dataset.notificationId}/read`);
+    if (card.closest(".notification-card")?.classList.contains("unread")) await window.libraryApi.patch(`/me/notifications/${card.dataset.notificationOpen}/read`);
   } catch {}
   location.href = card.dataset.notificationLink;
+}
+
+function setAccountView(view, message = "正在確認登入狀態…") {
+  $("account-loading").hidden = view !== "loading" && view !== "error";
+  $("account-gate").hidden = view !== "signed-out";
+  $("account-content").hidden = view !== "ready";
+  $("account-loading-message").textContent = message;
+  $("account-loading-card").hidden = view === "error";
+  $("account-retry").hidden = view !== "error";
 }
 
 function wireAccountEvents() {
@@ -237,19 +255,26 @@ function wireAccountEvents() {
       catch (error) { toast(error.message, "error"); }
       return;
     }
-    const notification = event.target.closest("[data-notification-id]");
+    const deleteNotification = event.target.closest("[data-notification-delete]");
+    if (deleteNotification) {
+      if (!confirm("確定刪除這則通知？")) return;
+      try {
+        await window.libraryApi.delete(`/me/notifications/${deleteNotification.dataset.notificationDelete}`);
+        accountState.data.notifications = accountState.data.notifications.filter((item) => String(item.id) !== deleteNotification.dataset.notificationDelete);
+        renderNotifications(); toast("通知已刪除");
+      } catch (error) { toast(error.message, "error"); }
+      return;
+    }
+    const notification = event.target.closest("[data-notification-open]");
     if (notification) openNotification(notification);
   });
-  document.addEventListener("keydown", (event) => { const card = event.target.closest?.("[data-notification-id]"); if (card && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); openNotification(card); } });
-  $("activity-rating").addEventListener("click", (event) => { const button = event.target.closest("[data-edit-rating]"); if (!button) return; accountState.editRating = Number(button.dataset.editRating); renderEditRating(); });
   document.querySelectorAll("[data-activity-close]").forEach((button) => button.addEventListener("click", () => $("activity-dialog").close()));
   $("activity-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const kind = $("activity-kind").value;
     try {
       if (kind === "review") {
-        if (!accountState.editRating) throw new Error("請選擇評分");
-        await window.libraryApi.put(`/books/${encodeURIComponent($("activity-book-id").value)}/review`, { rating: accountState.editRating, content: $("activity-content-input").value });
+        await window.libraryApi.put(`/books/${encodeURIComponent($("activity-book-id").value)}/review`, { content: $("activity-content-input").value });
       } else {
         await window.libraryApi.patch(`/annotations/${encodeURIComponent($("activity-id").value)}`, { content: $("activity-content-input").value, visibility: $("activity-public").checked ? "public" : "private" });
       }
@@ -265,6 +290,7 @@ function wireAccountEvents() {
   });
   $("notification-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    clearTimeout(accountState.thresholdSaveTimer);
     try {
       const result = await window.libraryApi.patch("/me/settings", {
         notifyAnnotationReplies: $("notify-annotation-replies").checked,
@@ -277,27 +303,59 @@ function wireAccountEvents() {
       accountState.data.settings = result.settings; renderAccount(); toast("通知設定已儲存");
     } catch (error) { toast(error.message, "error"); }
   });
-  $("account-annotation-threshold").addEventListener("input", () => { $("account-threshold-output").value = `${$("account-annotation-threshold").value}%`; });
+  $("notify-all-interactions").addEventListener("change", (event) => {
+    for (const id of NOTIFICATION_SETTING_IDS) $(id).checked = event.target.checked;
+    event.target.indeterminate = false;
+  });
+  for (const id of NOTIFICATION_SETTING_IDS) $(id).addEventListener("change", () => {
+    const enabledCount = NOTIFICATION_SETTING_IDS.filter((settingId) => $(settingId).checked).length;
+    $("notify-all-interactions").checked = enabledCount === NOTIFICATION_SETTING_IDS.length;
+    $("notify-all-interactions").indeterminate = enabledCount > 0 && enabledCount < NOTIFICATION_SETTING_IDS.length;
+  });
+  $("account-annotation-threshold").addEventListener("input", () => {
+    const value = Number($("account-annotation-threshold").value);
+    $("account-threshold-output").value = `${value}%`;
+    localStorage.setItem("mystery-library:annotation-threshold", String(value));
+    if (accountState.data) accountState.data.settings.annotationVisibilityThreshold = value;
+    clearTimeout(accountState.thresholdSaveTimer);
+    accountState.thresholdSaveTimer = setTimeout(async () => {
+      try {
+        const result = await window.libraryApi.patch("/me/settings", { annotationVisibilityThreshold: value });
+        if (accountState.data) accountState.data.settings.annotationVisibilityThreshold = result.settings.annotationVisibilityThreshold;
+      } catch (error) { toast(error.message, "error"); }
+    }, 400);
+  });
   $("mark-all-read").addEventListener("click", async () => {
     try { await window.libraryApi.post("/me/notifications/read-all"); await loadAccountAfterMutation(); toast("通知已全部標為已讀"); }
     catch (error) { toast(error.message, "error"); }
   });
+  $("account-retry").addEventListener("click", () => { void applyAccountAuth(window.libraryAuth.user); });
+}
+
+async function applyAccountAuth(user) {
+  const requestId = ++accountState.authRequestId;
+  $("account-logout").hidden = !user;
+  syncNotificationRealtime(user);
+  if (!user) {
+    clearTimeout(accountState.thresholdSaveTimer);
+    accountState.data = null;
+    setAccountView("signed-out");
+    return;
+  }
+  setAccountView("loading", "正在載入你的書房資料…");
+  showTab(location.hash.slice(1));
+  const loaded = await loadAccount(requestId);
+  if (requestId !== accountState.authRequestId) return;
+  if (loaded) { setAccountView("ready"); renderRealtimeHealth(); }
+  else setAccountView("error", "書房資料暫時無法載入，請稍後再試。");
 }
 
 async function initializeAccount() {
   wireAccountEvents();
   window.addEventListener("library-realtime-status", (event) => renderRealtimeHealth(event.detail));
   await window.libraryAuth.ready;
-  const applyAuth = async (user) => {
-    $("account-gate").hidden = Boolean(user);
-    $("account-content").hidden = !user;
-    $("account-logout").hidden = !user;
-    syncNotificationRealtime(user);
-    if (user) { showTab(location.hash.slice(1)); await loadAccountAfterMutation(); renderRealtimeHealth(); }
-    else accountState.data = null;
-  };
-  await applyAuth(window.libraryAuth.user);
-  window.addEventListener("library-auth-changed", (event) => applyAuth(event.detail.user));
+  await applyAccountAuth(window.libraryAuth.user);
+  window.addEventListener("library-auth-changed", (event) => applyAccountAuth(event.detail.user));
 }
 
 initializeAccount();

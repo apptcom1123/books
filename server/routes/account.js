@@ -109,4 +109,13 @@ router.post("/notifications/read-all", async (req, res, next) => {
   }
 });
 
+router.delete("/notifications/:notificationId", async (req, res, next) => {
+  try {
+    await req.repositories.user.deleteNotification(req.user.userId, req.params.notificationId);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

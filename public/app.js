@@ -9,7 +9,7 @@ const state = {
   pagination: { total: 0, hasMore: false },
   reviewBook: null,
   reviews: [],
-  reviewRating: 0,
+  reviewsExpanded: false,
   apiWarningShown: false,
   notificationRealtimeStop: null,
   notificationRealtimeUserId: null,
@@ -407,31 +407,40 @@ function avatarFor(user) {
   return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#dbe2d8"/><text x="32" y="40" text-anchor="middle" font-size="27" fill="#233d32">${initial}</text></svg>`)}`;
 }
 
-function renderReviewRating() {
-  document.getElementById("review-rating").innerHTML = Array.from({ length: 5 }, (_, index) => `<button class="${index < state.reviewRating ? "active" : ""}" type="button" data-review-rating="${index + 1}" aria-label="${index + 1} 顆星">★</button>`).join("");
+function compactSocialView() {
+  return window.matchMedia("(max-width: 700px)").matches;
+}
+
+function stableSocialSample(items, limit, salt = "") {
+  const score = (value) => {
+    let hash = 2166136261;
+    for (const character of `${salt}:${value}`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
+    return hash >>> 0;
+  };
+  return [...items].sort((a, b) => score(a.id) - score(b.id)).slice(0, limit);
 }
 
 function renderReviews() {
   const book = state.reviewBook;
   if (!book) return;
   document.getElementById("review-dialog-title").textContent = `《${book.title_zh}》讀者評論`;
-  document.getElementById("review-summary").innerHTML = `<strong>${Number(book.metrics.averageRating || 0).toFixed(1)}</strong><span>${book.metrics.ratingCount || 0} 份評分 ・ ${state.reviews.length} 則文字評論</span>`;
+  document.getElementById("review-summary").innerHTML = `<strong>${state.reviews.length}</strong><span>則讀者評論</span>`;
   const own = state.reviews.find((review) => review.isOwner);
-  state.reviewRating = own ? (book.viewer.rating || 0) : (book.viewer.rating || state.reviewRating || 0);
   if (own && !document.getElementById("review-content").value) document.getElementById("review-content").value = own.content;
   document.getElementById("review-submit").textContent = own ? "更新評論" : "發表評論";
-  renderReviewRating();
-  elements.reviewList.innerHTML = state.reviews.length ? state.reviews.map((review) => `<article class="review-card">
+  const compact = compactSocialView() && !state.reviewsExpanded && state.reviews.length > 3;
+  const visibleReviews = compact ? stableSocialSample(state.reviews, 3, book.id) : state.reviews;
+  elements.reviewList.innerHTML = state.reviews.length ? `${visibleReviews.map((review) => `<article class="review-card">
     <div class="review-head"><img src="${escapeHtml(avatarFor(review.author || {}))}" alt="" width="30" height="30" loading="lazy" decoding="async"><strong>${escapeHtml(review.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(review.author?.role) ? '<span class="role-badge">館員</span>' : ""}<time>${new Date(review.updated_at).toLocaleDateString("zh-TW")}</time></div>
     <p>${escapeHtml(review.content)}</p>
-    <div class="review-actions"><button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}"${state.reviewMutationPending.has(`like:${review.id}`) ? " disabled" : ""}>${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}"${state.reviewMutationPending.has(`favorite:${review.id}`) ? " disabled" : ""}>${review.viewerFavorite ? "★ 已收藏" : "☆ 收藏評論"} ${review.favoriteCount || 0}</button></div>
-  </article>`).join("") : '<p class="muted">還沒有文字評論，分享第一則無劇透心得吧。</p>';
+    <div class="review-actions"><button class="review-like${review.viewerLiked ? " active" : ""}" type="button" data-review-like="${review.id}"${state.reviewMutationPending.has(`like:${review.id}`) ? " disabled" : ""}>${review.viewerLiked ? "♥" : "♡"} ${review.likeCount} 人讚賞</button><button class="review-favorite${review.viewerFavorite ? " active" : ""}" type="button" data-review-favorite="${review.id}"${state.reviewMutationPending.has(`favorite:${review.id}`) ? " disabled" : ""}>${review.viewerFavorite ? "已收藏" : "收藏評論"} ${review.favoriteCount || 0}</button></div>
+  </article>`).join("")}${compact ? `<button class="review-expand" type="button" data-review-expand>查看全部 ${state.reviews.length} 則評論</button>` : ""}` : '<p class="muted">還沒有文字評論，分享第一則無劇透心得吧。</p>';
 }
 
 async function openReviews(bookId) {
   try {
     state.reviewBook = state.books.find((book) => book.id === bookId) || (await window.libraryApi.get(`/books/${encodeURIComponent(bookId)}`)).book;
-    state.reviewRating = state.reviewBook.viewer.rating || 0;
+    state.reviewsExpanded = false;
     document.getElementById("review-content").value = "";
     elements.reviewList.innerHTML = '<p class="muted">正在取回評論…</p>';
     if (!elements.reviewDialog.open) elements.reviewDialog.showModal();
@@ -495,12 +504,10 @@ function syncReviewRealtime(bookId = null) {
 async function submitReview(event) {
   event.preventDefault();
   if (!requireLogin() || !state.reviewBook) return;
-  if (!state.reviewRating) return toast("請先選擇 1 到 5 顆星。", "error");
   const submit = document.getElementById("review-submit");
   submit.disabled = true;
   try {
     const result = await window.libraryApi.put(`/books/${encodeURIComponent(state.reviewBook.id)}/review`, {
-      rating: state.reviewRating,
       content: document.getElementById("review-content").value,
     });
     Object.assign(state.reviewBook.metrics, result.metrics);
@@ -629,8 +636,7 @@ function wireEvents() {
   elements.grid.addEventListener("focusin", prefetchFromIntent);
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
   elements.reviewForm.addEventListener("submit", submitReview);
-  document.getElementById("review-rating").addEventListener("click", (event) => { const button = event.target.closest("[data-review-rating]"); if (!button) return; state.reviewRating = Number(button.dataset.reviewRating); renderReviewRating(); });
-  elements.reviewList.addEventListener("click", (event) => { const like = event.target.closest("[data-review-like]"); if (like) { toggleReviewLike(like.dataset.reviewLike); return; } const favorite = event.target.closest("[data-review-favorite]"); if (favorite) toggleReviewFavorite(favorite.dataset.reviewFavorite); });
+  elements.reviewList.addEventListener("click", (event) => { const expand = event.target.closest("[data-review-expand]"); if (expand) { state.reviewsExpanded = true; renderReviews(); return; } const like = event.target.closest("[data-review-like]"); if (like) { toggleReviewLike(like.dataset.reviewLike); return; } const favorite = event.target.closest("[data-review-favorite]"); if (favorite) toggleReviewFavorite(favorite.dataset.reviewFavorite); });
   elements.reviewDialog.addEventListener("close", () => syncReviewRealtime());
   document.getElementById("login-button").addEventListener("click", () => window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")));
   document.getElementById("logout-button").addEventListener("click", () => window.libraryAuth.logout());
@@ -643,8 +649,22 @@ function wireEvents() {
   });
 }
 
+function initializeSourceReveal() {
+  const section = document.querySelector("[data-source-reveal]");
+  if (!section || window.matchMedia("(prefers-reduced-motion: reduce)").matches || !("IntersectionObserver" in window)) return;
+  section.classList.add("source-reveal-ready");
+  const observer = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return;
+    section.classList.add("is-revealed");
+    observer.disconnect();
+    setTimeout(() => section.classList.add("source-reveal-complete"), 1050);
+  }, { threshold: 0.16, rootMargin: "0px 0px -8%" });
+  observer.observe(section);
+}
+
 async function initialize() {
   wireEvents();
+  initializeSourceReveal();
   renderSkeletons();
   await window.libraryAuth.ready;
   renderAuth(window.libraryAuth.user);

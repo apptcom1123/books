@@ -120,10 +120,10 @@ try {
   check(ratingRestored.viewer?.rating === originalRating, "Rating did not restore.");
   console.log("OK rating update and restore");
 
-  const reviewCreated = await put(`/books/${selectedBook.id}/review`, { rating: testRating, content: marker });
+  const reviewCreated = await put(`/books/${selectedBook.id}/review`, { content: marker });
   reviewId = reviewCreated.review?.id;
   check(reviewId && reviewCreated.review.content === marker, "Review was not created.");
-  const reviewEdited = await put(`/books/${selectedBook.id}/review`, { rating: testRating, content: `${marker}-edited` });
+  const reviewEdited = await put(`/books/${selectedBook.id}/review`, { content: `${marker}-edited` });
   check(reviewEdited.review?.id === reviewId && reviewEdited.review.content.endsWith("-edited"), "Review was not edited.");
   const liked = await post(`/reviews/${reviewId}/like`);
   check(liked.review?.viewerLiked === true, "Review like did not toggle on.");
