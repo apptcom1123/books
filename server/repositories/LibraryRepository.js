@@ -41,6 +41,39 @@ export class LibraryRepository {
     return book;
   }
 
+  async updateOrInsertOwnedRow(table, filters, updatePayload, insertPayload, columns) {
+    const update = async () => {
+      let query = this.db.from(table).update(updatePayload);
+      for (const [column, value] of Object.entries(filters)) query = query.eq(column, value);
+      return query.select(columns).maybeSingle();
+    };
+    let result = await update();
+    if (result.error) throw result.error;
+    if (result.data) return result.data;
+
+    result = await this.db.from(table).insert(insertPayload).select(columns).single();
+    if (!result.error) return result.data;
+    // Another tab may insert the same unique ownership pair between our update
+    // and insert. Converge by updating only mutable columns; never grant UPDATE
+    // on user_id or resource-id columns merely to make PostgREST upsert work.
+    if (result.error.code === "23505") {
+      result = await update();
+      if (!result.error && result.data) return result.data;
+    }
+    throw result.error || Object.assign(new Error("MUTATION_CONFLICT"), { status: 409 });
+  }
+
+  async softDeleteOwnedRow(table, idColumn, id, ownerColumn, userId, notFoundCode) {
+    const { count, error } = await this.db.from(table)
+      .update({ status: "deleted", updated_at: new Date().toISOString() }, { count: "exact" })
+      .eq(idColumn, id).eq(ownerColumn, userId).eq("status", "active");
+    if (error) throw error;
+    // Do not SELECT the updated row: deleted rows are intentionally hidden by
+    // public/owner read policies, and asking PostgREST to return them can turn a
+    // successful soft-delete into a 42501 response.
+    if (count !== 1) throw Object.assign(new Error(notFoundCode), { status: 404 });
+  }
+
   async metrics(bookIds) {
     if (!bookIds.length) return new Map();
     const results = await Promise.all(batches(bookIds).map((ids) => this.db
@@ -159,13 +192,13 @@ export class LibraryRepository {
       updated_at: new Date().toISOString(),
     };
     if (!payload.cfi) throw Object.assign(new Error("INVALID_PROGRESS"), { status: 400 });
-    const { data, error } = await this.db
-      .from("book_progress")
-      .upsert(payload, { onConflict: "book_id,user_id" })
-      .select("book_id,cfi,percentage,chapter_href,updated_at")
-      .single();
-    if (error) throw error;
-    return data;
+    return this.updateOrInsertOwnedRow(
+      "book_progress",
+      { book_id: bookId, user_id: userId },
+      { cfi: payload.cfi, chapter_href: payload.chapter_href, percentage, updated_at: payload.updated_at },
+      payload,
+      "book_id,cfi,percentage,chapter_href,updated_at",
+    );
   }
 
   async listAnnotations(bookId, userId = null) {
@@ -283,12 +316,19 @@ export class LibraryRepository {
     if (annotation.status !== "active" || (annotation.visibility !== "public" && annotation.author_id !== userId)) {
       throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
     }
-    const remove = voteType === "none";
-    const operation = remove
-      ? this.db.from("book_annotation_votes").delete().eq("annotation_id", annotationId).eq("user_id", userId)
-      : this.db.from("book_annotation_votes").upsert({ annotation_id: annotationId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "annotation_id,user_id" });
-    const { error } = await operation;
-    if (error) throw error;
+    if (voteType === "none") {
+      const { error } = await this.db.from("book_annotation_votes").delete().eq("annotation_id", annotationId).eq("user_id", userId);
+      if (error) throw error;
+    } else {
+      const updatedAt = new Date().toISOString();
+      await this.updateOrInsertOwnedRow(
+        "book_annotation_votes",
+        { annotation_id: annotationId, user_id: userId },
+        { vote_type: voteType, updated_at: updatedAt },
+        { annotation_id: annotationId, user_id: userId, vote_type: voteType, updated_at: updatedAt },
+        "annotation_id,vote_type,updated_at",
+      );
+    }
     return (await this.listAnnotations(annotation.book_id, userId)).find((item) => item.id === annotationId);
   }
 
@@ -333,12 +373,7 @@ export class LibraryRepository {
   }
 
   async deleteAnnotation(annotationId, userId) {
-    const { data, error } = await this.db.from("book_annotations")
-      .update({ status: "deleted", updated_at: new Date().toISOString() })
-      .eq("id", annotationId).eq("author_id", userId).eq("status", "active")
-      .select("id").maybeSingle();
-    if (error) throw error;
-    if (!data) throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
+    await this.softDeleteOwnedRow("book_annotations", "id", annotationId, "author_id", userId, "ANNOTATION_NOT_FOUND");
   }
 
   async replyToAnnotation(annotationId, userId, input) {
@@ -372,12 +407,7 @@ export class LibraryRepository {
   }
 
   async deleteAnnotationReply(replyId, userId) {
-    const { data, error } = await this.db.from("book_annotation_replies")
-      .update({ status: "deleted", updated_at: new Date().toISOString() })
-      .eq("id", replyId).eq("author_id", userId).eq("status", "active")
-      .select("id").maybeSingle();
-    if (error) throw error;
-    if (!data) throw Object.assign(new Error("REPLY_NOT_FOUND"), { status: 404 });
+    await this.softDeleteOwnedRow("book_annotation_replies", "id", replyId, "author_id", userId, "REPLY_NOT_FOUND");
   }
 
   async voteAnnotationReply(replyId, userId, voteType) {
@@ -385,11 +415,19 @@ export class LibraryRepository {
     const { data: reply, error: replyError } = await this.db.from("book_annotation_replies")
       .select("id,annotation_id,status").eq("id", replyId).single();
     if (replyError || !reply || reply.status !== "active") throw Object.assign(new Error("REPLY_NOT_FOUND"), { status: 404 });
-    const operation = voteType === "none"
-      ? this.db.from("book_annotation_reply_votes").delete().eq("reply_id", replyId).eq("user_id", userId)
-      : this.db.from("book_annotation_reply_votes").upsert({ reply_id: replyId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "reply_id,user_id" });
-    const { error } = await operation;
-    if (error) throw error;
+    if (voteType === "none") {
+      const { error } = await this.db.from("book_annotation_reply_votes").delete().eq("reply_id", replyId).eq("user_id", userId);
+      if (error) throw error;
+    } else {
+      const updatedAt = new Date().toISOString();
+      await this.updateOrInsertOwnedRow(
+        "book_annotation_reply_votes",
+        { reply_id: replyId, user_id: userId },
+        { vote_type: voteType, updated_at: updatedAt },
+        { reply_id: replyId, user_id: userId, vote_type: voteType, updated_at: updatedAt },
+        "reply_id,vote_type,updated_at",
+      );
+    }
     const { data: annotation, error: annotationError } = await this.db.from("book_annotations").select("book_id").eq("id", reply.annotation_id).single();
     if (annotationError) throw annotationError;
     return (await this.listAnnotations(annotation.book_id, userId)).find((item) => item.id === reply.annotation_id);
@@ -446,12 +484,7 @@ export class LibraryRepository {
   }
 
   async deleteReview(reviewId, userId) {
-    const { data, error } = await this.db.from("book_reviews")
-      .update({ status: "deleted", updated_at: new Date().toISOString() })
-      .eq("id", reviewId).eq("author_id", userId).eq("status", "active")
-      .select("id").maybeSingle();
-    if (error) throw error;
-    if (!data) throw Object.assign(new Error("REVIEW_NOT_FOUND"), { status: 404 });
+    await this.softDeleteOwnedRow("book_reviews", "id", reviewId, "author_id", userId, "REVIEW_NOT_FOUND");
   }
 
   async toggleReviewLike(reviewId, userId) {
@@ -639,11 +672,19 @@ export class LibraryRepository {
       .maybeSingle();
     if (feedbackError) throw feedbackError;
     if (!feedback || feedback.status !== "active") throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
-    const operation = voteType === "none"
-      ? this.db.from("library_feedback_votes").delete().eq("feedback_id", feedbackId).eq("user_id", userId)
-      : this.db.from("library_feedback_votes").upsert({ feedback_id: feedbackId, user_id: userId, vote_type: voteType, updated_at: new Date().toISOString() }, { onConflict: "feedback_id,user_id" });
-    const { error } = await operation;
-    if (error) throw error;
+    if (voteType === "none") {
+      const { error } = await this.db.from("library_feedback_votes").delete().eq("feedback_id", feedbackId).eq("user_id", userId);
+      if (error) throw error;
+    } else {
+      const updatedAt = new Date().toISOString();
+      await this.updateOrInsertOwnedRow(
+        "library_feedback_votes",
+        { feedback_id: feedbackId, user_id: userId },
+        { vote_type: voteType, updated_at: updatedAt },
+        { feedback_id: feedbackId, user_id: userId, vote_type: voteType, updated_at: updatedAt },
+        "feedback_id,vote_type,updated_at",
+      );
+    }
     return (await this.listFeedback(userId, feedback.parent_id || feedback.id)).find((item) => item.id === feedbackId);
   }
 
@@ -675,11 +716,10 @@ export class LibraryRepository {
 
   async deleteFeedback(feedbackId, userId) {
     const { data, error } = await this.db.from("library_feedback")
-      .update({ status: "deleted", updated_at: new Date().toISOString() })
-      .eq("id", feedbackId).eq("author_id", userId).eq("status", "active")
-      .select("id,parent_id").maybeSingle();
+      .select("id,parent_id").eq("id", feedbackId).eq("author_id", userId).eq("status", "active").maybeSingle();
     if (error) throw error;
     if (!data) throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
+    await this.softDeleteOwnedRow("library_feedback", "id", feedbackId, "author_id", userId, "FEEDBACK_NOT_FOUND");
     return { id: data.id, rootId: data.parent_id || data.id };
   }
 }

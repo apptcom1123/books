@@ -88,7 +88,7 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(schema, /create table if not exists public\.book_review_favorites/);
   assert.match(schema, /create policy book_annotation_votes_own_read/);
   assert.match(schema, /returns table \(reply_id text, score bigint, up_count bigint, down_count bigint, viewer_vote text\)/);
-  assert.match(schema, /parent\.annotation_id = book_annotation_replies\.annotation_id/);
+  assert.match(schema, /parent\.annotation_id = p_annotation_id/);
   assert.match(schema, /tg_table_name = 'book_annotation_votes'[\s\S]*?v_visibility = 'private'/);
 });
 
@@ -147,6 +147,7 @@ test("progress flushes to cloud and aggregate rating is shown on book cards", ()
 
 test("reader mutations recover cleanly and repeated theme switches replace one stylesheet", () => {
   const reader = read("public/reader.js");
+  const repository = read("server/repositories/LibraryRepository.js");
   assert.match(reader, /id = "mystery-reader-theme"/);
   assert.match(reader, /style\.textContent = READER_THEME_CSS\[theme\]/);
   assert.doesNotMatch(reader, /themes\.select\(theme\)/);
@@ -154,4 +155,8 @@ test("reader mutations recover cleanly and repeated theme switches replace one s
   assert.match(reader, /recordRollback\?\.\("annotation-vote"/);
   assert.match(reader, /recordRollback\?\.\("annotation-reply-vote"/);
   assert.match(reader, /finally \{[\s\S]{0,180}annotationMutationPending\.delete\(pendingKey\);[\s\S]{0,80}renderAnnotationState\(\)/);
+  assert.match(repository, /async updateOrInsertOwnedRow/);
+  assert.match(repository, /async softDeleteOwnedRow/);
+  assert.match(repository, /update\(\{ status: "deleted"[\s\S]{0,100}count: "exact"/);
+  assert.doesNotMatch(repository, /\.upsert\(/);
 });

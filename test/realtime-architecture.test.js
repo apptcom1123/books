@@ -36,6 +36,7 @@ test("realtime client scopes private topics and protects mobile/background resou
 
 test("database Broadcast uses RLS and compact sequence deltas", () => {
   const schema = fs.readFileSync(path.join(ROOT, "server", "db", "library-schema.sql"), "utf8");
+  const rowFieldMigration = fs.readFileSync(path.join(ROOT, "server", "db", "migrations", "20260813_fix_realtime_trigger_row_fields.sql"), "utf8");
   const route = fs.readFileSync(path.join(ROOT, "server", "routes", "realtime.js"), "utf8");
   const feedback = fs.readFileSync(path.join(ROOT, "public", "feedback.js"), "utf8");
   const feedbackHtml = fs.readFileSync(path.join(ROOT, "public", "feedback.html"), "utf8");
@@ -51,6 +52,10 @@ test("database Broadcast uses RLS and compact sequence deltas", () => {
     assert.match(schema, new RegExp(`library_realtime_[\\s\\S]{0,80}on public\\.${table}`, "i"));
   }
   assert.match(schema, /emitted_at < now\(\) - interval '7 days'/i);
+  assert.match(schema, /v_catalog_changed boolean := true/i);
+  assert.match(schema, /if tg_op = 'UPDATE' then[\s\S]{0,180}to_jsonb\(old\)[\s\S]{0,80}status/i);
+  assert.doesNotMatch(schema, /and not \(tg_table_name = 'book_reviews'[\s\S]{0,100}old\.status = new\.status\)/i);
+  assert.match(rowFieldMigration, /begin;[\s\S]*v_catalog_changed[\s\S]*commit;/i);
   assert.match(route, /REALTIME_TOPIC_FORBIDDEN/);
   assert.match(route, /REALTIME_CATCHUP_RATE_LIMITED/);
   assert.match(route, /gt\("sequence_id", after\)/);

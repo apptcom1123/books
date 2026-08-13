@@ -7,6 +7,7 @@
 - 公開書評、公開標注與標注回覆的 RLS policy 混入只授權 `authenticated` 的 `library_user_is_active()`；匿名讀取會回 `42501`，並使建立標注後的重新載入、回覆與投票看似失敗。
 - 標注已改用可信任的文字位移與五字聚合，但 `book_annotations` 的欄位級 `INSERT` grant 沒有同步加入三個必填欄位；因此已登入使用者仍會在資料庫層建立失敗。
 - 回饋列表一次抓取最多 200 筆主題與回覆，再由瀏覽器搜尋和整理；資料增加後 payload、作者與投票 hydration 都會變慢，也沒有自己的內容刪除權限。
+- 共用 Realtime trigger 的 catalog 條件直接引用 `OLD.status`／`NEW.status`；PostgreSQL 不保證布林運算短路，因此收藏、評分、投票與標注等沒有 `status` 欄位的資料表會拋出 `42703`，使原本已通過 RLS 的 mutation 全部回滾。
 - 標注回覆完成時仍處於 pending 狀態，重新渲染後表單保持停用，使用者無法繼續回覆。
 - epub.js 會保留每次注入的主題 CSS；反覆切換後，較晚注入的舊規則持續覆蓋目前選擇。
 - `dist` 曾與 `public` 原始碼不同步；直接使用舊輸出會缺少新版 API 錯誤、逾時、快取與 UX 邏輯。
@@ -33,6 +34,11 @@
 18. **背景重新驗證**：回饋列表與討論串有快取時先顯示舊資料，stale 後在背景更新；舊請求仍由 request ID 阻止覆蓋新搜尋。
 19. **可追蹤 API 錯誤**：每個回應加入 `X-Request-Id`；後端記錄錯誤／慢於 750 ms 的 route、狀態與耗時，前端錯誤紀錄包含 endpoint、status、code 與 request ID。
 20. **完整登入驗收**：`test:authenticated` 新增回饋討論／回覆／投票／搜尋／刪除，並修正標注 payload；測試結束會清理建立的暫時資料。
+21. **Realtime trigger 跨表修復**：書評是否影響 catalog 的判斷改在 `book_reviews` 分支內先計算 `v_catalog_changed`；其他資料表不再讀取不存在的 `status` 欄位。新增獨立 migration，避免重新部署前端仍留下資料庫 trigger 錯誤。
+22. **欄位級權限與 upsert 相容性**：標注投票、回覆投票、回饋投票及閱讀進度不再用會嘗試更新 ownership 主鍵的 PostgREST upsert；改為只更新允許變更的欄位，不存在時才 INSERT，唯一鍵競態則收斂回 UPDATE。`user_id` 與 target ID 仍保持不可更新。
+23. **回覆 RLS 遞迴修復**：標注回覆 INSERT policy 不再直接查詢自己的資料表；父回覆是否有效及是否屬於同一標注改由只回傳布林值的 security-definer helper 驗證，消除 `42P17` 並維持巢狀回覆邊界。
+24. **Soft-delete 回傳修復**：刪除標注、回覆、書評與回饋後不再 SELECT 已被 read policy 隱藏的 deleted row；改以精確 affected-row count 判斷成功，避免合法 UPDATE 因回傳資料不可見而變成 `42501`。
+25. **Soft-delete 可見性 policy**：回覆與回饋新增只限作者自己的 SELECT policy，使狀態更新為 deleted 後仍符合 PostgreSQL UPDATE 可見性要求；匿名及其他使用者仍只能讀取 active 公開資料。
 
 ## `frontend_data_ux_onboarding.md` 對照
 
@@ -47,7 +53,7 @@
 | Realtime | 沿用小型 delta、批次刷新、去重、補漏、背景取消訂閱與重連後驗證；mutation 以伺服器資料收斂。 |
 | 渲染與媒體 | 館藏圖片維持固定尺寸、lazy loading；討論長列表使用瀏覽器原生延遲渲染。Storage 上傳與 Next.js hydration 本專案未使用。 |
 | 錯誤、離線與權限 | 網路狀態列、分類錯誤、有限 GET 重試、RLS 公私分離及 migration 驗證已完成。 |
-| 索引與原子更新 | 新增回饋根討論游標索引；讚、收藏維持複合主鍵與 upsert/delete，評分及統計維持資料庫 RPC，不由前端讀值加一再寫回。 |
+| 索引與原子更新 | 新增回饋根討論游標索引；讚、收藏維持複合主鍵，投票採只更新 mutable 欄位／不存在才 INSERT，評分及統計維持資料庫 RPC，不由前端讀值加一再寫回。 |
 | 可觀測性 | API 延遲／payload、request ID、錯誤 route、LCP、CLS、INP、Realtime 健康度與 mutation rollback 均可記錄。 |
 
 ## 驗證結果
@@ -56,11 +62,13 @@
 - JavaScript syntax check：前端、後端、repository 與驗證腳本通過。
 - `npm run build`：200 筆館藏、200 個 EPUB 建置成功。
 - 正式 Supabase 公開讀取與私人表隔離：通過；舊的三個公開 policy 問題已修復。
-- 正式 Supabase 新回饋分頁 RPC：尚未部署，`verify:supabase` 目前正確回報 `PGRST202`。登入 mutation smoke 因本機沒有短效 token 尚未執行。
+- 正式 Supabase 新回饋分頁 RPC：已部署；匿名與登入狀態的 schema、RPC、公開讀取及私人表讀取均通過。
+- 正式 authenticated smoke 曾依序重現並定位 Realtime trigger `42703`、投票 upsert 欄位權限、回覆 policy `42P17` 與 soft-delete `42501`；各根因均已修正。
+- 最新本機後端連正式 Supabase 的完整 authenticated smoke：全部通過。涵蓋身分、個人書房、設定還原、圖書收藏／評分、書評建立／編輯／按讚／收藏／刪除、標注建立／編輯／投票／收藏／回覆／回覆投票／刪除，以及回饋建立／回覆／投票／搜尋／刪除。
+- 失敗過程留下的兩則暫時回覆已成功 soft-delete；最終個人書房重新載入確認清理完成。
 
 ## 正式環境必要部署
 
-1. 在 Supabase SQL Editor 執行 `server/db/migrations/20260813_social_platform_audit.sql`。它只補 grant、RLS、索引與 RPC，不會清空既有討論、標注或帳號資料。
-2. 在本機專案目錄執行 `npm run verify:supabase`；公開表與新 RPC 應顯示 `OK`，私人表應顯示 `PROTECTED`。這個命令只讀檢查遠端 Supabase，不是在 SQL Editor 內執行。
-3. 重新部署目前程式碼；本機 `npm run build` 已成功，避免正式環境繼續使用舊 `dist`。
-4. 取得短效登入 token 後在本機執行 `npm run test:authenticated`，驗證所有實際 mutation。token 不可提交到 GitHub。
+1. `20260813_social_platform_audit.sql`、`20260813_fix_realtime_trigger_row_fields.sql`、`20260813_fix_annotation_reply_policy_recursion.sql`、`20260813_fix_soft_delete_read_policies.sql` 均已套用。
+2. 將本次 repository、schema、migration、測試與紀錄提交 GitHub，觸發 Vercel 部署；正式站需要新版 repository 才能使用安全的 UPDATE／INSERT 投票流程。
+3. 部署完成後在正式網址再執行一次 `npm run test:authenticated`，確認 Vercel Function 已載入新 commit。

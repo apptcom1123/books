@@ -374,6 +374,24 @@ as $$
   );
 $$;
 
+-- RLS policies cannot safely query their own table to validate a parent row;
+-- doing so recursively invokes the same policy. Expose only the boolean needed
+-- to prove that a nested reply belongs to the same active annotation thread.
+create or replace function public.library_annotation_reply_parent_is_valid(p_parent_id text, p_annotation_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from public.book_annotation_replies parent
+    where parent.id = p_parent_id
+      and parent.annotation_id = p_annotation_id
+      and parent.status = 'active'
+  );
+$$;
+
 -- Safe projection for names shown beside public annotations and feedback.
 create or replace function public.get_library_public_profiles(p_user_ids text[])
 returns table (id text, public_display_name text, avatar_url text, role text)
@@ -859,6 +877,7 @@ declare
   v_sequence_id bigint;
   v_operation text := lower(tg_op);
   v_payload jsonb;
+  v_catalog_changed boolean := true;
 begin
   if tg_table_name = 'library_notifications' then
     v_user_id := coalesce(new.user_id, old.user_id);
@@ -877,6 +896,9 @@ begin
     v_book_id := coalesce(new.book_id, old.book_id);
     v_resource := 'review';
     v_target_id := coalesce(new.id, old.id);
+    if tg_op = 'UPDATE' then
+      v_catalog_changed := (to_jsonb(old) ->> 'status') is distinct from (to_jsonb(new) ->> 'status');
+    end if;
   elsif tg_table_name = 'book_review_likes' then
     select r.book_id into v_book_id from public.book_reviews r where r.id = coalesce(new.review_id, old.review_id);
     v_resource := 'review_like';
@@ -970,7 +992,7 @@ begin
   -- The home page uses one catalog room rather than one channel per visible
   -- book. Only changes that affect book-card aggregates are mirrored here.
   if v_book_id is not null and v_resource in ('book_rating', 'book_favorite', 'review')
-     and not (tg_table_name = 'book_reviews' and tg_op = 'UPDATE' and old.status = new.status) then
+     and v_catalog_changed then
     insert into public.library_realtime_events(topic, resource, operation, target_id, book_id)
     values ('catalog:activity', v_resource, v_operation, v_target_id, v_book_id)
     returning sequence_id into v_sequence_id;
@@ -1193,6 +1215,7 @@ create policy book_annotation_favorites_own_delete on public.book_annotation_fav
 
 drop policy if exists book_annotation_replies_visible_read on public.book_annotation_replies;
 drop policy if exists book_annotation_replies_own_read on public.book_annotation_replies;
+drop policy if exists book_annotation_replies_author_read on public.book_annotation_replies;
 drop policy if exists book_annotation_replies_own_insert on public.book_annotation_replies;
 drop policy if exists book_annotation_replies_own_update on public.book_annotation_replies;
 drop policy if exists book_annotation_replies_own_delete on public.book_annotation_replies;
@@ -1206,6 +1229,8 @@ create policy book_annotation_replies_own_read on public.book_annotation_replies
     select 1 from public.book_annotations a where a.id = book_annotation_replies.annotation_id
       and a.status = 'active' and a.author_id = auth.uid()::text
   ));
+create policy book_annotation_replies_author_read on public.book_annotation_replies for select to authenticated
+  using (author_id = auth.uid()::text and public.library_user_is_active());
 create policy book_annotation_replies_own_insert on public.book_annotation_replies for insert to authenticated
   with check (
     author_id = auth.uid()::text and status = 'active' and public.library_user_is_active()
@@ -1213,12 +1238,7 @@ create policy book_annotation_replies_own_insert on public.book_annotation_repli
       and (a.visibility = 'public' or a.author_id = auth.uid()::text))
     and (
       parent_reply_id is null
-      or exists (
-        select 1 from public.book_annotation_replies parent
-        where parent.id = book_annotation_replies.parent_reply_id
-          and parent.annotation_id = book_annotation_replies.annotation_id
-          and parent.status = 'active'
-      )
+      or public.library_annotation_reply_parent_is_valid(parent_reply_id, annotation_id)
     )
   );
 create policy book_annotation_replies_own_update on public.book_annotation_replies for update to authenticated
@@ -1246,9 +1266,12 @@ create policy book_annotation_reply_votes_own_delete on public.book_annotation_r
   using (user_id = auth.uid()::text and public.library_user_is_active());
 
 drop policy if exists library_feedback_public_read on public.library_feedback;
+drop policy if exists library_feedback_own_read on public.library_feedback;
 drop policy if exists library_feedback_own_insert on public.library_feedback;
 drop policy if exists library_feedback_own_update on public.library_feedback;
 create policy library_feedback_public_read on public.library_feedback for select to anon, authenticated using (status = 'active');
+create policy library_feedback_own_read on public.library_feedback for select to authenticated
+  using (author_id = auth.uid()::text and public.library_user_is_active());
 create policy library_feedback_own_insert on public.library_feedback for insert to authenticated
   with check (author_id = auth.uid()::text and status = 'active' and public.library_user_is_active());
 create policy library_feedback_own_update on public.library_feedback for update to authenticated
@@ -1372,6 +1395,7 @@ grant delete on public.library_notifications to authenticated;
 revoke all on function public.ensure_library_profile() from public, anon, authenticated;
 revoke all on function public.update_library_profile(text) from public, anon, authenticated;
 revoke all on function public.library_user_is_active() from public, anon, authenticated;
+revoke all on function public.library_annotation_reply_parent_is_valid(text, text) from public, anon, authenticated;
 revoke all on function public.get_library_public_profiles(text[]) from public, anon, authenticated;
 revoke all on function public.get_book_public_metrics(text[]) from public, anon, authenticated;
 revoke all on function public.set_library_book_rating(text, integer) from public, anon, authenticated;
@@ -1387,6 +1411,7 @@ revoke all on function public.broadcast_library_realtime_event() from public, an
 grant execute on function public.ensure_library_profile() to authenticated;
 grant execute on function public.update_library_profile(text) to authenticated;
 grant execute on function public.library_user_is_active() to authenticated;
+grant execute on function public.library_annotation_reply_parent_is_valid(text, text) to authenticated;
 grant execute on function public.get_library_public_profiles(text[]) to anon, authenticated;
 grant execute on function public.get_book_public_metrics(text[]) to anon, authenticated;
 grant execute on function public.set_library_book_rating(text, integer) to authenticated;

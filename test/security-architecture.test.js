@@ -53,12 +53,16 @@ test("runtime code has no secret-key dependency and database authorization is RL
   assert.match(schema, /create policy book_annotations_visible_read/i);
   assert.match(schema, /create policy book_annotations_own_read[\s\S]*?to authenticated/i);
   assert.match(schema, /create policy book_annotation_replies_own_read[\s\S]*?to authenticated/i);
+  assert.match(schema, /create policy book_annotation_replies_author_read[\s\S]*?author_id = auth\.uid\(\)::text/i);
+  assert.match(schema, /library_annotation_reply_parent_is_valid\(parent_reply_id, annotation_id\)/i);
+  assert.doesNotMatch(schema, /create policy book_annotation_replies_own_insert[\s\S]{0,900}select 1 from public\.book_annotation_replies parent/i);
   assert.match(schema, /create policy book_annotations_visible_read[\s\S]*?visibility = 'public'/i);
   assert.doesNotMatch(schema, /create policy book_annotations_visible_read[\s\S]{0,240}library_user_is_active/i);
   assert.match(publicReadMigration, /begin;[\s\S]*book_annotations_visible_read[\s\S]*book_annotation_replies_own_read[\s\S]*commit;/i);
   assert.match(socialAuditMigration, /begin;[\s\S]*anchor_offset_start[\s\S]*get_library_feedback_root_page[\s\S]*commit;/i);
   assert.match(schema, /grant insert \(id, book_id, author_id, chapter_href, cfi_range, anchor_offset_start, anchor_offset_end, cluster_key, quote, content, visibility\) on public\.book_annotations to authenticated/i);
   assert.match(schema, /create policy library_notifications_own_read/i);
+  assert.match(schema, /create policy library_feedback_own_read[\s\S]*?author_id = auth\.uid\(\)::text/i);
   assert.match(schema, /create policy library_user_settings_own_update/i);
   assert.match(schema, /create trigger library_notify_annotation_favorite/i);
   assert.match(schema, /create trigger library_notify_review_like/i);
