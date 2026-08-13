@@ -14,6 +14,7 @@ test("reader feedback is a standalone searchable thread surface", () => {
   const script = read("public/feedback.js");
   const routes = read("server/routes/feedback.js");
   const schema = read("server/db/library-schema.sql");
+  const css = read("public/feedback.css");
   assert.match(homepage, /href="\/feedback\.html"/);
   assert.doesNotMatch(homepage, /id="feedback-list"/);
   assert.match(page, /id="feedback-search"/);
@@ -26,6 +27,12 @@ test("reader feedback is a standalone searchable thread surface", () => {
   assert.match(script, /data-feedback-delete/);
   assert.match(script, /data-feedback-vote="up"/);
   assert.match(script, /data-feedback-vote="down"/);
+  assert.match(script, /function queueFeedbackVoteAnimation/);
+  assert.match(script, /subscribeFeedback/);
+  assert.match(script, /showFeedbackLiveStatus/);
+  assert.match(css, /\.feedback-vote-rail/);
+  assert.match(css, /\.vote-score-track\.up/);
+  assert.match(css, /#feedback-thread-content[^}]*overflow-y:auto/);
   assert.doesNotMatch(script, /data-feedback-favorite/);
   assert.match(routes, /\/:feedbackId\/vote/);
   assert.match(routes, /router\.delete\("\/:feedbackId"/);
@@ -78,7 +85,10 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(script, /threadContent\.addEventListener\("pointerup"/);
   assert.match(script, /note-vote-rail/);
   assert.match(css, /\.note-vote-rail[^{]*\{/);
-  assert.match(css, /\.thread-reply-form[^}]*position:sticky/);
+  assert.match(html, /id="annotation-thread-composer"/);
+  assert.match(css, /\.annotation-thread-composer[^}]*flex:0 0 auto/);
+  assert.match(css, /\.vote-score-track\.up/);
+  assert.match(script, /function queueVoteAnimation/);
   assert.match(script, /data-toggle-replies/);
   assert.match(script, /setTimeout\(saveAnnotationThreshold, 400\)/);
   assert.match(script, /await window\.libraryApi\.patch\("\/me\/settings"/);
@@ -105,7 +115,7 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(schema, /tg_table_name = 'book_annotation_votes'[\s\S]*?v_visibility = 'private'/);
 });
 
-test("text reviews stay separate from book star ratings and mobile lists stay compact", () => {
+test("text reviews stay separate from ratings and use a scrollable book-aware dialog", () => {
   const html = read("public/index.html");
   const app = read("public/app.js");
   const account = read("public/account.html");
@@ -113,8 +123,11 @@ test("text reviews stay separate from book star ratings and mobile lists stay co
   const smoke = read("scripts/authenticated-smoke.js");
   assert.doesNotMatch(html, /id="review-rating"/);
   assert.doesNotMatch(account, /id="activity-rating"/);
-  assert.match(app, /function stableSocialSample/);
-  assert.match(app, /data-review-expand/);
+  assert.match(html, /id="review-book-context"/);
+  assert.match(html, /class="review-dialog-scroll"/);
+  assert.match(app, /review-book-context/);
+  assert.doesNotMatch(app, /stableSocialSample/);
+  assert.doesNotMatch(app, /data-review-expand/);
   assert.doesNotMatch(app, /reviewRating/);
   assert.doesNotMatch(routes, /發表評論時請選擇/);
   assert.doesNotMatch(routes, /router\.put\("\/:bookId\/review"[\s\S]{0,700}\.setRating/);

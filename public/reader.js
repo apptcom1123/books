@@ -49,6 +49,7 @@ const readerState = {
   replyDrafts: new Map(),
   expandedReplyNotes: new Set(),
   annotationMutationPending: new Set(),
+  voteAnimations: new Map(),
   bubbleTap: { id: null, at: 0 },
   theme: "publisher",
 };
@@ -474,19 +475,6 @@ function visibleBubbleNotes() {
       selected.push(...ordered.slice(0, visibleCount));
     }
   }
-  if (window.matchMedia("(max-width: 700px)").matches && selected.length > 4) {
-    const score = (cluster) => {
-      let hash = 2166136261;
-      for (const character of `${bookId}:${readerState.annotationThreshold}:${cluster.key}`) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-      return hash >>> 0;
-    };
-    const chapters = new Map();
-    for (const cluster of selected) {
-      if (!chapters.has(cluster.chapter)) chapters.set(cluster.chapter, []);
-      chapters.get(cluster.chapter).push(cluster);
-    }
-    selected = [...chapters.values()].flatMap((chapter) => [...chapter].sort((a, b) => score(a) - score(b)).slice(0, 4));
-  }
   return [...privateClusters, ...selected].sort(compareAnnotationClusters);
 }
 
@@ -578,28 +566,26 @@ function annotationReplyMarkup(reply, depth = 0) {
   return `<article class="thread-note-reply" data-reply-id="${escapeHtml(reply.id)}" style="--reply-depth:${Math.min(depth, 5)}">
     <header><img src="${escapeHtml(avatarFor(reply.author))}" alt=""><strong>${escapeHtml(reply.author?.public_display_name || "讀者")}</strong><time>${new Date(reply.created_at).toLocaleString("zh-TW")}</time></header>
     <p>${escapeHtml(reply.content)}</p>
-    <div class="reply-actions"><button type="button" data-reply-vote="up" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "up" ? "active" : ""}" aria-pressed="${reply.viewerVote === "up"}"${votePending ? " disabled" : ""}>▲ ${Number(reply.upCount) || 0}</button><button type="button" data-reply-vote="down" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "down" ? "active down" : "down"}" aria-pressed="${reply.viewerVote === "down"}"${votePending ? " disabled" : ""}>▼ ${Number(reply.downCount) || 0}</button><span>${Number(reply.score) >= 0 ? "+" : ""}${Number(reply.score) || 0}</span><button type="button" data-reply-target="${escapeHtml(reply.id)}" data-reply-author="${escapeHtml(reply.author?.public_display_name || "讀者")}">回覆</button></div>
+    <div class="reply-actions"><button type="button" data-reply-vote="up" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "up" ? "active" : ""}" aria-pressed="${reply.viewerVote === "up"}"${votePending ? " disabled" : ""}>▲ ${Number(reply.upCount) || 0}</button><button type="button" data-reply-vote="down" data-reply-id="${escapeHtml(reply.id)}" class="${reply.viewerVote === "down" ? "active down" : "down"}" aria-pressed="${reply.viewerVote === "down"}"${votePending ? " disabled" : ""}>▼ ${Number(reply.downCount) || 0}</button><span class="reply-score">${voteScoreContent(`reply:${reply.id}`, Number(reply.score) || 0)}</span><button type="button" data-reply-target="${escapeHtml(reply.id)}" data-reply-author="${escapeHtml(reply.author?.public_display_name || "讀者")}">回覆</button></div>
     ${reply.children.map((child) => annotationReplyMarkup(child, depth + 1)).join("")}
   </article>`;
 }
 
 function annotationThreadCard(note) {
   const replies = annotationReplyTree(note.replies || []);
+  const repliesExpanded = readerState.expandedReplyNotes.has(note.id);
   const compactReplies = window.matchMedia("(max-width: 700px)").matches
-    && !readerState.expandedReplyNotes.has(note.id) && (note.replies?.length || 0) > 2;
+    && !repliesExpanded && (note.replies?.length || 0) > 2;
   const visibleReplies = compactReplies
     ? [...(note.replies || [])].sort(compareReplies).slice(0, 2).map((reply) => ({ ...reply, children: [] }))
     : replies;
-  const parentReply = readerState.replyParentId ? note.replies?.find((reply) => reply.id === readerState.replyParentId) : null;
   const votePending = readerState.annotationMutationPending.has(`note-vote:${note.id}`);
   const favoritePending = readerState.annotationMutationPending.has(`note-favorite:${note.id}`);
-  const replyPending = readerState.annotationMutationPending.has(`note-reply:${note.id}`);
-  const replyDraft = readerState.replyDrafts.get(note.id) || "";
   return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
     <div class="thread-note-layout">
       <div class="note-vote-rail" role="group" aria-label="標注評價">
         <button type="button" class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}" aria-label="讚賞，目前 ${Number(note.upCount) || 0} 票"${votePending ? " disabled" : ""}>▲</button>
-        <strong aria-label="淨分 ${note.score >= 0 ? "+" : ""}${note.score}">${note.score >= 0 ? "+" : ""}${note.score}</strong>
+        <strong aria-label="淨分 ${note.score >= 0 ? "+" : ""}${note.score}">${voteScoreContent(`note:${note.id}`, Number(note.score) || 0)}</strong>
         <button type="button" class="down ${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}" aria-label="不讚同，目前 ${Number(note.downCount) || 0} 票"${votePending ? " disabled" : ""}>▼</button>
       </div>
       <div class="thread-note-body">
@@ -609,9 +595,34 @@ function annotationThreadCard(note) {
         <div class="note-actions">${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}"${favoritePending ? " disabled" : ""}>${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
       </div>
     </div>
-    <form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" value="${escapeHtml(replyDraft)}" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>
-    <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div><div class="thread-replies-list">${visibleReplies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>${compactReplies ? `<button class="thread-replies-expand" type="button" data-toggle-replies="${note.id}">查看全部 ${note.replies.length} 則回覆</button>` : ""}</div>
+    <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div><div class="thread-replies-list">${visibleReplies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>${(note.replies?.length || 0) > 2 && window.matchMedia("(max-width: 700px)").matches ? `<button class="thread-replies-expand" type="button" data-toggle-replies="${note.id}" aria-expanded="${repliesExpanded}">${repliesExpanded ? "收起回覆" : `查看全部 ${note.replies.length} 則回覆`}</button>` : ""}</div>
   </article>`;
+}
+
+function annotationComposerMarkup(note) {
+  const parentReply = readerState.replyParentId ? note.replies?.find((reply) => reply.id === readerState.replyParentId) : null;
+  const replyPending = readerState.annotationMutationPending.has(`note-reply:${note.id}`);
+  const replyDraft = readerState.replyDrafts.get(note.id) || "";
+  return `<form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" value="${escapeHtml(replyDraft)}" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>`;
+}
+
+function queueVoteAnimation(key, fromScore, toScore) {
+  const from = Number(fromScore) || 0;
+  const to = Number(toScore) || 0;
+  if (from !== to) readerState.voteAnimations.set(key, { from, to });
+}
+
+function signedScore(score) {
+  return `${score >= 0 ? "+" : ""}${score}`;
+}
+
+function voteScoreContent(key, score) {
+  const animation = readerState.voteAnimations.get(key);
+  readerState.voteAnimations.delete(key);
+  if (!animation || animation.from === animation.to) return signedScore(score);
+  const direction = animation.to > animation.from ? "up" : "down";
+  const values = direction === "up" ? [animation.from, animation.to] : [animation.to, animation.from];
+  return `<span class="vote-score-window" aria-hidden="true"><span class="vote-score-track ${direction}"><span>${signedScore(values[0])}</span><span>${signedScore(values[1])}</span></span></span>`;
 }
 
 function annotationClusterForNote(noteId) {
@@ -634,6 +645,8 @@ function openAnnotationThread(noteId, { reset = false } = {}) {
   nextButton.disabled = pageIndex >= cluster.notes.length - 1;
   document.getElementById("annotation-thread-page").textContent = `${pageIndex + 1} / ${cluster.notes.length}`;
   document.getElementById("annotation-thread-content").innerHTML = annotationThreadCard(selected);
+  for (const reply of selected.replies || []) readerState.voteAnimations.delete(`reply:${reply.id}`);
+  document.getElementById("annotation-thread-composer").innerHTML = annotationComposerMarkup(selected);
   const dialog = document.getElementById("annotation-thread-dialog");
   if (!dialog.open) dialog.showModal();
 }
@@ -653,7 +666,19 @@ async function loadAnnotations() {
   try {
     const result = await window.libraryApi.get(`/books/${encodeURIComponent(bookId)}/annotations`);
     if (requestId !== readerState.annotationRequestId) return;
-    readerState.annotations = result.annotations || [];
+    const annotations = result.annotations || [];
+    const previousNotes = new Map(readerState.annotations.map((note) => [note.id, note]));
+    const previousReplies = new Map(readerState.annotations.flatMap((note) => note.replies || []).map((reply) => [reply.id, reply]));
+    for (const note of annotations) {
+      if (note.id !== readerState.activeThreadNoteId || !document.getElementById("annotation-thread-dialog").open) continue;
+      const previous = previousNotes.get(note.id);
+      if (previous) queueVoteAnimation(`note:${note.id}`, previous.score, note.score);
+      for (const reply of note.replies || []) {
+        const previousReply = previousReplies.get(reply.id);
+        if (previousReply) queueVoteAnimation(`reply:${reply.id}`, previousReply.score, reply.score);
+      }
+    }
+    readerState.annotations = annotations;
     renderAnnotationBubbles();
     if (readerState.activeThreadNoteId && document.getElementById("annotation-thread-dialog").open) openAnnotationThread(readerState.activeThreadNoteId);
     const requested = !readerState.requestedNoteHandled && requestedNoteId && readerState.annotations.find((note) => note.id === requestedNoteId);
@@ -673,9 +698,10 @@ function renderAnnotationState() {
   renderAnnotationBubbles();
   const dialog = document.getElementById("annotation-thread-dialog");
   if (readerState.activeThreadNoteId && dialog?.open) {
-    const scrollTop = dialog.scrollTop;
+    const content = document.getElementById("annotation-thread-content");
+    const scrollTop = content.scrollTop;
     openAnnotationThread(readerState.activeThreadNoteId);
-    dialog.scrollTop = scrollTop;
+    content.scrollTop = scrollTop;
   }
 }
 
@@ -736,7 +762,7 @@ function syncAnnotationRealtime(active) {
   readerState.annotationRealtimeStop = window.libraryRealtime.subscribeBook(bookId, ({ events }) => {
     if (events.length && !events.some((event) => event.resource.startsWith("annotation"))) return;
     clearTimeout(readerState.annotationRefreshTimer);
-    readerState.annotationRefreshTimer = setTimeout(() => loadAnnotations(), 280);
+    readerState.annotationRefreshTimer = setTimeout(() => loadAnnotations(), readerState.annotationMutationPending.size ? 520 : 280);
   });
 }
 
@@ -769,17 +795,26 @@ async function voteAnnotation(id, voteType) {
   if (!note) return;
   const nextVote = note.viewerVote === voteType ? "none" : voteType;
   readerState.annotationMutationPending.add(pendingKey);
-  replaceAnnotation(optimisticVote(note, nextVote));
+  const optimistic = optimisticVote(note, nextVote);
+  queueVoteAnimation(`note:${id}`, note.score, optimistic.score);
+  replaceAnnotation(optimistic);
   renderAnnotationState();
+  const animationStartedAt = performance.now();
   try {
     const result = await window.libraryApi.post(`/annotations/${encodeURIComponent(id)}/vote`, { voteType: nextVote });
+    const current = readerState.annotations.find((item) => item.id === id);
+    queueVoteAnimation(`note:${id}`, current?.score, result.annotation?.score);
     replaceAnnotation(result.annotation);
   } catch (error) {
+    const current = readerState.annotations.find((item) => item.id === id);
+    queueVoteAnimation(`note:${id}`, current?.score, note.score);
     replaceAnnotation(note);
     window.libraryUX?.recordRollback?.("annotation-vote", error.code);
     toast(error.message, "error");
   }
   finally {
+    const remaining = 430 - (performance.now() - animationStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     readerState.annotationMutationPending.delete(pendingKey);
     renderAnnotationState();
   }
@@ -835,9 +870,7 @@ async function replyAnnotation(id, content, parentReplyId = null) {
     readerState.annotationMutationPending.delete(pendingKey);
     renderAnnotationState();
     if (readerState.replyDrafts.has(id)) {
-      [...document.querySelectorAll("#annotation-thread-content [data-thread-note-id]")]
-        .find((node) => node.dataset.threadNoteId === id)
-        ?.querySelector(".thread-reply-form input")?.focus();
+      document.querySelector("#annotation-thread-composer .thread-reply-form input")?.focus();
     }
   }
 }
@@ -851,17 +884,27 @@ async function voteAnnotationReply(replyId, voteType) {
   if (!reply || !note) return;
   const nextVote = reply.viewerVote === voteType ? "none" : voteType;
   readerState.annotationMutationPending.add(pendingKey);
-  replaceAnnotation({ ...note, replies: note.replies.map((item) => item.id === replyId ? optimisticVote(item, nextVote) : item) });
+  const optimistic = optimisticVote(reply, nextVote);
+  queueVoteAnimation(`reply:${replyId}`, reply.score, optimistic.score);
+  replaceAnnotation({ ...note, replies: note.replies.map((item) => item.id === replyId ? optimistic : item) });
   renderAnnotationState();
+  const animationStartedAt = performance.now();
   try {
     const result = await window.libraryApi.post(`/annotation-replies/${encodeURIComponent(replyId)}/vote`, { voteType: nextVote });
+    const current = readerState.annotations.flatMap((item) => item.replies || []).find((item) => item.id === replyId);
+    const resultReply = result.annotation?.replies?.find((item) => item.id === replyId);
+    queueVoteAnimation(`reply:${replyId}`, current?.score, resultReply?.score);
     replaceAnnotation(result.annotation);
   } catch (error) {
+    const current = readerState.annotations.flatMap((item) => item.replies || []).find((item) => item.id === replyId);
+    queueVoteAnimation(`reply:${replyId}`, current?.score, reply.score);
     replaceAnnotation(note);
     window.libraryUX?.recordRollback?.("annotation-reply-vote", error.code);
     toast(error.message, "error");
   }
   finally {
+    const remaining = 430 - (performance.now() - animationStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     readerState.annotationMutationPending.delete(pendingKey);
     renderAnnotationState();
   }
@@ -912,6 +955,7 @@ function wireControls() {
   document.getElementById("annotation-thread-previous").addEventListener("click", () => turnAnnotationThread(-1));
   document.getElementById("annotation-thread-next").addEventListener("click", () => turnAnnotationThread(1));
   const threadContent = document.getElementById("annotation-thread-content");
+  const threadDialog = document.getElementById("annotation-thread-dialog");
   threadContent.addEventListener("pointerdown", (event) => {
     if (event.pointerType === "mouse" || event.target.closest("button, input, a, select, textarea")) return;
     readerState.threadSwipe = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
@@ -926,13 +970,19 @@ function wireControls() {
     turnAnnotationThread(deltaX < 0 ? 1 : -1);
   });
   threadContent.addEventListener("pointercancel", () => { readerState.threadSwipe = null; });
-  threadContent.addEventListener("input", (event) => {
+  threadDialog.addEventListener("input", (event) => {
     const form = event.target.closest("[data-reply-form]");
     if (form && event.target.matches("input")) readerState.replyDrafts.set(form.dataset.replyForm, event.target.value);
   });
   document.getElementById("annotation-thread-content").addEventListener("click", (event) => {
     const toggleReplies = event.target.closest("[data-toggle-replies]");
-    if (toggleReplies) { readerState.expandedReplyNotes.add(toggleReplies.dataset.toggleReplies); renderAnnotationState(); return; }
+    if (toggleReplies) {
+      const id = toggleReplies.dataset.toggleReplies;
+      if (readerState.expandedReplyNotes.has(id)) readerState.expandedReplyNotes.delete(id);
+      else readerState.expandedReplyNotes.add(id);
+      renderAnnotationState();
+      return;
+    }
     const vote = event.target.closest("[data-note-vote]");
     if (vote) { voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
     const favorite = event.target.closest("[data-note-favorite]");
@@ -951,9 +1001,7 @@ function wireControls() {
       if (noteCard?.dataset.threadNoteId) readerState.activeThreadNoteId = noteCard.dataset.threadNoteId;
       readerState.replyParentId = replyTarget.dataset.replyTarget;
       openAnnotationThread(readerState.activeThreadNoteId);
-      [...document.querySelectorAll("#annotation-thread-content [data-thread-note-id]")]
-        .find((node) => node.dataset.threadNoteId === readerState.activeThreadNoteId)
-        ?.querySelector(".thread-reply-form input")?.focus();
+      document.querySelector("#annotation-thread-composer .thread-reply-form input")?.focus();
       return;
     }
     if (event.target.closest("[data-cancel-reply]") && readerState.activeThreadNoteId) {
@@ -961,7 +1009,13 @@ function wireControls() {
       openAnnotationThread(readerState.activeThreadNoteId);
     }
   });
-  document.getElementById("annotation-thread-content").addEventListener("submit", async (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); const button = form.querySelector('button[type="submit"]'); if (!input.value.trim()) return; input.disabled = true; button.disabled = true; const sent = await replyAnnotation(form.dataset.replyForm, input.value, form.dataset.parentReplyId || null); if (!sent && form.isConnected) { input.disabled = false; button.disabled = false; input.focus(); } });
+  threadDialog.addEventListener("click", (event) => {
+    if (event.target.closest("[data-cancel-reply]") && readerState.activeThreadNoteId) {
+      readerState.replyParentId = null;
+      openAnnotationThread(readerState.activeThreadNoteId);
+    }
+  });
+  threadDialog.addEventListener("submit", async (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); const button = form.querySelector('button[type="submit"]'); if (!input.value.trim()) return; input.disabled = true; button.disabled = true; const sent = await replyAnnotation(form.dataset.replyForm, input.value, form.dataset.parentReplyId || null); if (!sent && form.isConnected) { input.disabled = false; button.disabled = false; input.focus(); } });
   document.getElementById("annotation-thread-dialog").addEventListener("close", () => { readerState.activeThreadNoteId = null; readerState.replyParentId = null; readerState.threadSwipe = null; });
   document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) location.href = "/account.html"; else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
   window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; void syncAnnotationThreshold(event.detail.user); if (readerState.rendition) { loadAnnotations(); if (event.detail.user) persistProgress(); } });

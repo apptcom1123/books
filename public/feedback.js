@@ -4,6 +4,8 @@ const feedbackState = {
   activeId: null,
   query: "",
   votePending: new Set(),
+  voteAnimations: new Map(),
+  expandedThreads: new Set(),
   deletePending: new Set(),
   cursor: null,
   hasMore: false,
@@ -105,16 +107,37 @@ function messageMarkup(message, { root = false } = {}) {
   const downCount = Number(message.downCount) || 0;
   const pending = feedbackState.votePending.has(message.id);
   const deletePending = feedbackState.deletePending.has(message.id);
-  return `<article class="thread-message${root ? " root" : ""}">
-    <header><img src="${escapeHtml(safeAvatar(message.author))}" alt=""><div><strong>${escapeHtml(message.author?.public_display_name || "讀者")}</strong><time>${new Date(message.created_at).toLocaleString("zh-TW")}</time></div>${roleBadge(message.author)}</header>
-    <p>${escapeHtml(message.content)}</p>
-    <div class="feedback-vote-actions" role="group" aria-label="這則${root ? "討論" : "回覆"}的評價">
-      <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▲</span> 讚 <b>${upCount}</b></button>
-      <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" ${pending ? "disabled" : ""}><span aria-hidden="true">▼</span> 倒讚 <b>${downCount}</b></button>
-      <span class="feedback-vote-score" aria-label="淨分 ${score}">淨分 ${score >= 0 ? "+" : ""}${score}</span>
-      ${message.isOwner ? `<button type="button" class="feedback-delete" data-feedback-delete="${escapeHtml(message.id)}"${deletePending ? " disabled" : ""}>${deletePending ? "刪除中…" : "刪除"}</button>` : ""}
+  return `<article class="thread-message${root ? " root" : ""}" data-feedback-message="${escapeHtml(message.id)}">
+    <div class="feedback-message-layout">
+      <div class="feedback-vote-rail" role="group" aria-label="這則${root ? "討論" : "回覆"}的評價">
+        <button type="button" data-feedback-vote="up" data-feedback-id="${escapeHtml(message.id)}" class="${message.viewerVote === "up" ? "active" : ""}" aria-pressed="${message.viewerVote === "up"}" aria-label="讚賞，目前 ${upCount} 票" ${pending ? "disabled" : ""}>▲</button>
+        <strong aria-label="淨分 ${score}">${feedbackVoteScoreContent(message.id, score)}</strong>
+        <button type="button" data-feedback-vote="down" data-feedback-id="${escapeHtml(message.id)}" class="down ${message.viewerVote === "down" ? "active" : ""}" aria-pressed="${message.viewerVote === "down"}" aria-label="不讚同，目前 ${downCount} 票" ${pending ? "disabled" : ""}>▼</button>
+      </div>
+      <div class="feedback-message-body"><header><img src="${escapeHtml(safeAvatar(message.author))}" alt=""><div><strong>${escapeHtml(message.author?.public_display_name || "讀者")}</strong><time>${new Date(message.created_at).toLocaleString("zh-TW")}</time></div>${roleBadge(message.author)}</header>
+      <p>${escapeHtml(message.content)}</p></div>
     </div>
+    ${message.isOwner ? `<button type="button" class="feedback-delete" data-feedback-delete="${escapeHtml(message.id)}"${deletePending ? " disabled" : ""}>${deletePending ? "刪除中…" : "刪除"}</button>` : ""}
   </article>`;
+}
+
+function queueFeedbackVoteAnimation(id, fromScore, toScore) {
+  const from = Number(fromScore) || 0;
+  const to = Number(toScore) || 0;
+  if (from !== to) feedbackState.voteAnimations.set(id, { from, to });
+}
+
+function feedbackSignedScore(score) {
+  return `${score >= 0 ? "+" : ""}${score}`;
+}
+
+function feedbackVoteScoreContent(id, score) {
+  const animation = feedbackState.voteAnimations.get(id);
+  feedbackState.voteAnimations.delete(id);
+  if (!animation || animation.from === animation.to) return feedbackSignedScore(score);
+  const direction = animation.to > animation.from ? "up" : "down";
+  const values = direction === "up" ? [animation.from, animation.to] : [animation.to, animation.from];
+  return `<span class="vote-score-window" aria-hidden="true"><span class="vote-score-track ${direction}"><span>${feedbackSignedScore(values[0])}</span><span>${feedbackSignedScore(values[1])}</span></span></span>`;
 }
 
 function replaceFeedbackMessage(updated) {
@@ -131,6 +154,12 @@ function mergeFeedbackThreads(messages = [], { complete = true, invalidateReques
     feedbackState.loading = false;
   }
   const previousRoots = new Map(feedbackState.messages.filter((message) => !message.parent_id).map((message) => [message.id, message]));
+  const previousMessages = new Map(feedbackState.messages.map((message) => [message.id, message]));
+  for (const message of messages) {
+    if ((message.parent_id || message.id) !== feedbackState.activeId || !feedbackElements.threadDialog.open) continue;
+    const previous = previousMessages.get(message.id);
+    if (previous) queueFeedbackVoteAnimation(message.id, previous.score, message.score);
+  }
   const incomingRoots = messages.filter((message) => !message.parent_id).map((root) => {
     const replies = messages.filter((message) => message.parent_id === root.id)
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
@@ -171,17 +200,28 @@ async function toggleFeedbackVote(feedbackId, voteType) {
   if (!message) return;
   const nextVote = message.viewerVote === voteType ? "none" : voteType;
   feedbackState.votePending.add(feedbackId);
-  replaceFeedbackMessage(optimisticFeedbackVote(message, nextVote));
+  const optimistic = optimisticFeedbackVote(message, nextVote);
+  queueFeedbackVoteAnimation(feedbackId, message.score, optimistic.score);
+  replaceFeedbackMessage(optimistic);
   renderFeedbackViews();
+  const animationStartedAt = performance.now();
   try {
     const result = await window.libraryApi.post(`/feedback/${encodeURIComponent(feedbackId)}/vote`, { voteType: nextVote });
-    if (result.message) replaceFeedbackMessage(result.message);
+    if (result.message) {
+      const current = feedbackState.messages.find((item) => item.id === feedbackId);
+      queueFeedbackVoteAnimation(feedbackId, current?.score, result.message.score);
+      replaceFeedbackMessage(result.message);
+    }
     window.libraryApi.invalidate("feedback");
   } catch (error) {
+    const current = feedbackState.messages.find((item) => item.id === feedbackId);
+    queueFeedbackVoteAnimation(feedbackId, current?.score, message.score);
     replaceFeedbackMessage(message);
     window.libraryUX?.recordRollback?.("feedback-vote", error.code);
     toast(error.message, "error");
   } finally {
+    const remaining = 430 - (performance.now() - animationStartedAt);
+    if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
     feedbackState.votePending.delete(feedbackId);
     renderFeedbackViews();
   }
@@ -189,8 +229,21 @@ async function toggleFeedbackVote(feedbackId, voteType) {
 
 function showThread(thread) {
   const replyCount = thread.repliesLoaded ? thread.replies.length : Number(thread.replyCount || 0);
-  feedbackElements.threadContent.innerHTML = `<p class="eyebrow">READER CONVERSATION</p><h2>${escapeHtml(thread.subject || "讀者建議")}</h2>${messageMarkup(thread, { root: true })}<div class="thread-divider"><span>${replyCount} 則回覆</span></div><div class="thread-replies">${thread.replies.map((reply) => messageMarkup(reply)).join("") || '<p class="thread-no-replies">尚未有人回覆，成為第一位加入討論的讀者。</p>'}</div>`;
+  const scrollTop = feedbackElements.threadContent.scrollTop;
+  const expanded = feedbackState.expandedThreads.has(thread.id);
+  const compact = window.matchMedia("(max-width: 580px)").matches && !expanded && thread.replies.length > 2;
+  const visibleReplies = compact ? thread.replies.slice(-2) : thread.replies;
+  feedbackElements.threadContent.innerHTML = `<p class="eyebrow">READER CONVERSATION</p><h2>${escapeHtml(thread.subject || "讀者建議")}</h2>${messageMarkup(thread, { root: true })}<div class="thread-divider"><span>${replyCount} 則回覆</span></div><div class="thread-replies">${visibleReplies.map((reply) => messageMarkup(reply)).join("") || '<p class="thread-no-replies">尚未有人回覆，成為第一位加入討論的讀者。</p>'}</div>${thread.replies.length > 2 && window.matchMedia("(max-width: 580px)").matches ? `<button class="thread-replies-toggle" type="button" data-feedback-replies-toggle="${thread.id}" aria-expanded="${expanded}">${expanded ? "收起回覆" : `查看全部 ${thread.replies.length} 則回覆`}</button>` : ""}`;
+  feedbackElements.threadContent.scrollTop = scrollTop;
   feedbackElements.replyForm.hidden = !window.libraryAuth.user;
+}
+
+function showFeedbackLiveStatus(message) {
+  const node = document.getElementById("feedback-live-status");
+  node.textContent = message;
+  node.hidden = false;
+  clearTimeout(showFeedbackLiveStatus.timer);
+  showFeedbackLiveStatus.timer = setTimeout(() => { node.hidden = true; }, 2200);
 }
 
 async function openThread(id, { updateUrl = true, force = false } = {}) {
@@ -348,12 +401,15 @@ function syncFeedbackRealtime() {
     for (const event of events) {
       if (["feedback", "feedback_vote"].includes(event.resource) && event.targetId) feedbackState.refreshThreadIds.add(event.targetId);
     }
+    if (feedbackState.activeId && events.some((event) => event.targetId === feedbackState.activeId) && feedbackState.votePending.size === 0) {
+      showFeedbackLiveStatus("有新的討論動態，正在同步…");
+    }
     clearTimeout(feedbackState.refreshTimer);
     feedbackState.refreshTimer = setTimeout(() => {
       const ids = [...feedbackState.refreshThreadIds];
       feedbackState.refreshThreadIds.clear();
       refreshFeedbackThreads(ids);
-    }, 280);
+    }, feedbackState.votePending.size ? 520 : 280);
   });
 }
 
@@ -390,6 +446,15 @@ function wireFeedbackEvents() {
     if (card) void openThread(card.dataset.threadId);
   });
   feedbackElements.threadContent.addEventListener("click", (event) => {
+    const toggleReplies = event.target.closest("[data-feedback-replies-toggle]");
+    if (toggleReplies) {
+      const id = toggleReplies.dataset.feedbackRepliesToggle;
+      if (feedbackState.expandedThreads.has(id)) feedbackState.expandedThreads.delete(id);
+      else feedbackState.expandedThreads.add(id);
+      const thread = feedbackState.roots.find((item) => item.id === id);
+      if (thread) showThread(thread);
+      return;
+    }
     const button = event.target.closest("[data-feedback-vote]");
     if (button) { toggleFeedbackVote(button.dataset.feedbackId, button.dataset.feedbackVote); return; }
     const remove = event.target.closest("[data-feedback-delete]");

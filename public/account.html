@@ -74,11 +74,13 @@
 
       <section class="account-panel" data-account-panel="activity" hidden>
         <div class="panel-title"><div><p class="eyebrow">YOUR MARGINALIA</p><h2>評論與標注</h2></div></div>
-        <h3>我的書評</h3><div id="my-reviews" class="activity-list"></div>
-        <h3 class="subsection-title">收藏的讀者評論</h3><div id="saved-reviews" class="activity-list"></div>
-        <h3 class="subsection-title">我的標注</h3><div id="my-annotations" class="activity-list"></div>
-        <h3 class="subsection-title">我的回覆</h3><div id="my-replies" class="activity-list"></div>
-        <h3 class="subsection-title">收藏的公開標注</h3><div id="saved-annotations" class="activity-list"></div>
+        <div class="account-activity-shelves">
+          <section class="activity-shelf"><h3>我的書評</h3><div id="my-reviews" class="activity-list" tabindex="0" aria-label="我的書評，可捲動"></div></section>
+          <section class="activity-shelf"><h3>收藏的讀者評論</h3><div id="saved-reviews" class="activity-list" tabindex="0" aria-label="收藏的讀者評論，可捲動"></div></section>
+          <section class="activity-shelf"><h3>我的標注</h3><div id="my-annotations" class="activity-list" tabindex="0" aria-label="我的標注，可捲動"></div></section>
+          <section class="activity-shelf"><h3>我的回覆</h3><div id="my-replies" class="activity-list" tabindex="0" aria-label="我的回覆，可捲動"></div></section>
+          <section class="activity-shelf"><h3>收藏的公開標注</h3><div id="saved-annotations" class="activity-list" tabindex="0" aria-label="收藏的公開標注，可捲動"></div></section>
+        </div>
       </section>
 
       <section class="account-panel" data-account-panel="notifications" hidden>

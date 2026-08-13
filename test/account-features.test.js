@@ -28,6 +28,11 @@ test("personal center ships the expected management surfaces", () => {
   assert.match(routes, /router\.delete\("\/notifications\/:notificationId"/);
   assert.match(repository, /async notifications\(userId, limit = 30\)/);
   assert.match(repository, /async deleteNotification/);
+  assert.match(html, /class="account-activity-shelves"/);
+  assert.match(html, /class="activity-shelf"/);
+  const css = fs.readFileSync(path.join(ROOT, "public", "account.css"), "utf8");
+  assert.match(css, /\.account-gate\[hidden\],#account-content\[hidden\]/);
+  assert.match(css, /\.activity-shelf \.activity-list[^}]*overflow-y:auto/);
 });
 
 test("personal center API rejects anonymous access", async () => {

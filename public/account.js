@@ -329,10 +329,10 @@ function wireAccountEvents() {
     try { await window.libraryApi.post("/me/notifications/read-all"); await loadAccountAfterMutation(); toast("通知已全部標為已讀"); }
     catch (error) { toast(error.message, "error"); }
   });
-  $("account-retry").addEventListener("click", () => { void applyAccountAuth(window.libraryAuth.user); });
+  $("account-retry").addEventListener("click", () => { void applyAccountAuth(window.libraryAuth.user, { force: true }); });
 }
 
-async function applyAccountAuth(user) {
+async function applyAccountAuth(user, { force = false } = {}) {
   const requestId = ++accountState.authRequestId;
   $("account-logout").hidden = !user;
   syncNotificationRealtime(user);
@@ -340,6 +340,14 @@ async function applyAccountAuth(user) {
     clearTimeout(accountState.thresholdSaveTimer);
     accountState.data = null;
     setAccountView("signed-out");
+    return;
+  }
+  if (!force && accountState.data?.user?.id === user.id) {
+    renderAccount();
+    setAccountView("ready");
+    showTab(location.hash.slice(1));
+    renderRealtimeHealth();
+    void loadAccount(requestId);
     return;
   }
   setAccountView("loading", "正在載入你的書房資料…");

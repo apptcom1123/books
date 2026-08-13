@@ -113,13 +113,16 @@
   <dialog id="review-dialog" class="dialog review-dialog">
     <div class="review-dialog-shell">
       <div class="dialog-head"><div><p class="eyebrow">READER REVIEWS</p><h2 id="review-dialog-title">讀者評論</h2></div><button class="icon-close" type="button" data-dialog-close="review-dialog" aria-label="關閉">×</button></div>
-      <div id="review-summary" class="review-summary"></div>
+      <div class="review-dialog-scroll">
+        <section id="review-book-context" class="review-book-context" aria-label="書籍資訊"></section>
+        <div id="review-summary" class="review-summary"></div>
+        <div id="review-list" class="review-list"></div>
+      </div>
       <form id="review-form" class="review-form">
-        <h3>留下你的評論</h3>
-        <label>評論內容<textarea id="review-content" maxlength="4000" rows="5" required placeholder="分享無劇透心得、線索觀察或閱讀感受…"></textarea></label>
-        <div class="dialog-actions"><button id="review-submit" class="button button-dark" type="submit">發表評論</button></div>
+        <label class="review-composer-label" for="review-content">留下你的評論</label>
+        <textarea id="review-content" maxlength="4000" rows="2" required placeholder="分享無劇透心得、線索觀察或閱讀感受…"></textarea>
+        <button id="review-submit" class="button button-dark" type="submit">發表評論</button>
       </form>
-      <div id="review-list" class="review-list"></div>
     </div>
   </dialog>
 
