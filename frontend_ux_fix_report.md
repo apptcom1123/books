@@ -39,6 +39,7 @@
 23. **回覆 RLS 遞迴修復**：標注回覆 INSERT policy 不再直接查詢自己的資料表；父回覆是否有效及是否屬於同一標注改由只回傳布林值的 security-definer helper 驗證，消除 `42P17` 並維持巢狀回覆邊界。
 24. **Soft-delete 回傳修復**：刪除標注、回覆、書評與回饋後不再 SELECT 已被 read policy 隱藏的 deleted row；改以精確 affected-row count 判斷成功，避免合法 UPDATE 因回傳資料不可見而變成 `42501`。
 25. **Soft-delete 可見性 policy**：回覆與回饋新增只限作者自己的 SELECT policy，使狀態更新為 deleted 後仍符合 PostgreSQL UPDATE 可見性要求；匿名及其他使用者仍只能讀取 active 公開資料。
+26. **標注討論獨立分頁**：同一位置泡泡內不再一次展開所有討論串，也不顯示位置聚合統計；每次只渲染一個標注，提供上一個／下一個按鈕與行動裝置左右滑動切換。切頁時仍保留各標注尚未送出的回覆草稿。
 
 ## `frontend_data_ux_onboarding.md` 對照
 

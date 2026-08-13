@@ -42,6 +42,7 @@ const readerState = {
   progressSavedOnce: false,
   progressSaveQueue: Promise.resolve(),
   activeThreadNoteId: null,
+  threadSwipe: null,
   replySort: "best",
   replyParentId: null,
   replyDrafts: new Map(),
@@ -597,14 +598,25 @@ function openAnnotationThread(noteId, { reset = false } = {}) {
     readerState.replyParentId = null;
   }
   readerState.activeThreadNoteId = noteId;
-  const rangeLabel = cluster.clusterIndex === null
-    ? "舊版獨立定位"
-    : `起始位置第 ${cluster.clusterIndex * ANNOTATION_CLUSTER_SIZE + 1}–${(cluster.clusterIndex + 1) * ANNOTATION_CLUSTER_SIZE} 個字詞`;
-  const replyCount = cluster.notes.reduce((total, note) => total + (note.replies?.length || 0), 0);
-  document.getElementById("annotation-thread-rank").textContent = `${rangeLabel}聚合，共 ${cluster.notes.length} 個獨立討論串、${replyCount} 則回覆；討論串與回覆皆依淨分、讚數和時間排序。`;
-  document.getElementById("annotation-thread-content").innerHTML = cluster.notes.map(annotationThreadCard).join("");
+  const pageIndex = cluster.notes.findIndex((note) => note.id === noteId);
+  const previousButton = document.getElementById("annotation-thread-previous");
+  const nextButton = document.getElementById("annotation-thread-next");
+  previousButton.disabled = pageIndex <= 0;
+  nextButton.disabled = pageIndex >= cluster.notes.length - 1;
+  document.getElementById("annotation-thread-page").textContent = `${pageIndex + 1} / ${cluster.notes.length}`;
+  document.getElementById("annotation-thread-content").innerHTML = annotationThreadCard(selected);
   const dialog = document.getElementById("annotation-thread-dialog");
   if (!dialog.open) dialog.showModal();
+}
+
+function turnAnnotationThread(direction) {
+  if (!readerState.activeThreadNoteId) return;
+  const cluster = annotationClusterForNote(readerState.activeThreadNoteId);
+  const currentIndex = cluster?.notes.findIndex((note) => note.id === readerState.activeThreadNoteId) ?? -1;
+  const nextNote = cluster?.notes[currentIndex + direction];
+  if (!nextNote) return;
+  openAnnotationThread(nextNote.id, { reset: true });
+  document.getElementById("annotation-thread-content").scrollIntoView({ block: "start" });
 }
 
 async function loadAnnotations() {
@@ -837,6 +849,27 @@ function wireControls() {
   });
   document.getElementById("annotation-form").addEventListener("submit", submitAnnotation);
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
+  document.getElementById("annotation-thread-previous").addEventListener("click", () => turnAnnotationThread(-1));
+  document.getElementById("annotation-thread-next").addEventListener("click", () => turnAnnotationThread(1));
+  const threadContent = document.getElementById("annotation-thread-content");
+  threadContent.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" || event.target.closest("button, input, a, select, textarea")) return;
+    readerState.threadSwipe = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  });
+  threadContent.addEventListener("pointerup", (event) => {
+    const swipe = readerState.threadSwipe;
+    readerState.threadSwipe = null;
+    if (!swipe || swipe.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - swipe.x;
+    const deltaY = event.clientY - swipe.y;
+    if (Math.abs(deltaX) < 55 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.2) return;
+    turnAnnotationThread(deltaX < 0 ? 1 : -1);
+  });
+  threadContent.addEventListener("pointercancel", () => { readerState.threadSwipe = null; });
+  threadContent.addEventListener("input", (event) => {
+    const form = event.target.closest("[data-reply-form]");
+    if (form && event.target.matches("input")) readerState.replyDrafts.set(form.dataset.replyForm, event.target.value);
+  });
   document.getElementById("annotation-thread-content").addEventListener("click", (event) => {
     const vote = event.target.closest("[data-note-vote]");
     if (vote) { voteAnnotation(vote.dataset.id, vote.dataset.noteVote); return; }
@@ -867,7 +900,7 @@ function wireControls() {
     }
   });
   document.getElementById("annotation-thread-content").addEventListener("submit", async (event) => { const form = event.target.closest("[data-reply-form]"); if (!form) return; event.preventDefault(); const input = form.querySelector("input"); const button = form.querySelector('button[type="submit"]'); if (!input.value.trim()) return; input.disabled = true; button.disabled = true; const sent = await replyAnnotation(form.dataset.replyForm, input.value, form.dataset.parentReplyId || null); if (!sent && form.isConnected) { input.disabled = false; button.disabled = false; input.focus(); } });
-  document.getElementById("annotation-thread-dialog").addEventListener("close", () => { readerState.activeThreadNoteId = null; readerState.replyParentId = null; });
+  document.getElementById("annotation-thread-dialog").addEventListener("close", () => { readerState.activeThreadNoteId = null; readerState.replyParentId = null; readerState.threadSwipe = null; });
   document.getElementById("reader-login").addEventListener("click", () => { if (window.libraryAuth.user) location.href = "/account.html"; else window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")); });
   window.addEventListener("library-auth-changed", (event) => { document.getElementById("reader-login").textContent = event.detail.user ? "書房" : "登入"; if (readerState.rendition) { loadAnnotations(); if (event.detail.user) persistProgress(); } });
   window.addEventListener("focus", () => { if (readerState.rendition) loadAnnotations(); });

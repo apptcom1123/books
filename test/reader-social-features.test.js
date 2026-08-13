@@ -69,8 +69,14 @@ test("annotation bubbles aggregate five-position local threads with ranked realt
   assert.match(script, /mystery-note-bubble/);
   assert.match(script, /annotationVisibilityThreshold/);
   assert.match(script, /rect\.bottom \+ 4/);
-  assert.match(script, /cluster\.notes\.map\(annotationThreadCard\)\.join/);
+  assert.match(script, /innerHTML = annotationThreadCard\(selected\)/);
   assert.match(script, /cluster\.notes\.length/);
+  assert.match(script, /function turnAnnotationThread/);
+  assert.match(script, /annotation-thread-previous/);
+  assert.match(script, /annotation-thread-next/);
+  assert.match(script, /threadContent\.addEventListener\("pointerup"/);
+  assert.doesNotMatch(html, /annotation-thread-rank/);
+  assert.doesNotMatch(script, /起始位置第/);
   assert.match(script, /data-reply-sort="best"/);
   assert.match(script, /subscribeBook\(bookId/);
   assert.doesNotMatch(script, /annotations\.highlight/);

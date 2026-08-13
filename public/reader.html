@@ -65,7 +65,11 @@
   <dialog id="annotation-thread-dialog" class="annotation-thread-dialog">
     <div class="annotation-thread-shell">
       <div class="dialog-head"><div><small>ANNOTATION THREAD</small><h2>標注與討論</h2></div><button type="button" data-dialog-close="annotation-thread-dialog" aria-label="關閉">×</button></div>
-      <p id="annotation-thread-rank" class="annotation-thread-rank"></p>
+      <nav class="annotation-thread-pagination" aria-label="切換標注討論">
+        <button id="annotation-thread-previous" type="button" aria-label="上一個標注討論">← 上一個</button>
+        <span id="annotation-thread-page" aria-live="polite"></span>
+        <button id="annotation-thread-next" type="button" aria-label="下一個標注討論">下一個 →</button>
+      </nav>
       <div id="annotation-thread-content" class="annotation-thread-content"></div>
     </div>
   </dialog>
