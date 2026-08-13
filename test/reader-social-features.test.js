@@ -136,3 +136,14 @@ test("progress flushes to cloud and aggregate rating is shown on book cards", ()
   assert.match(schema, /create or replace function public\.set_library_book_rating\(p_book_id text, p_rating integer\)/);
   assert.match(schema, /on conflict on constraint book_ratings_pkey do update/);
 });
+
+test("reader mutations recover cleanly and repeated theme switches replace one stylesheet", () => {
+  const reader = read("public/reader.js");
+  assert.match(reader, /id = "mystery-reader-theme"/);
+  assert.match(reader, /style\.textContent = READER_THEME_CSS\[theme\]/);
+  assert.doesNotMatch(reader, /themes\.select\(theme\)/);
+  assert.match(reader, /function optimisticVote/);
+  assert.match(reader, /recordRollback\?\.\("annotation-vote"/);
+  assert.match(reader, /recordRollback\?\.\("annotation-reply-vote"/);
+  assert.match(reader, /finally \{[\s\S]{0,180}annotationMutationPending\.delete\(pendingKey\);[\s\S]{0,80}renderAnnotationState\(\)/);
+});

@@ -10,14 +10,27 @@ class LibraryApi {
   }
 
   userMessage(status, code, fallback) {
-    if (fallback) return fallback;
+    const known = {
+      INVALID_ANNOTATION: "標注內容或文字位置不完整，請重新選取文字後再試。",
+      INVALID_REPLY: "請先輸入回覆內容。",
+      INVALID_FEEDBACK: "請先輸入討論或回覆內容。",
+      INVALID_VOTE: "這次評價無法辨識，請重新操作。",
+      ANNOTATION_NOT_FOUND: "這則標注已不存在，或你沒有查看權限。",
+      REPLY_NOT_FOUND: "這則回覆已不存在，請重新整理討論串。",
+      FEEDBACK_NOT_FOUND: "這段討論已不存在，請回到列表重新選擇。",
+      USER_INACTIVE: "這個帳號目前無法進行互動，請聯絡管理員。",
+      AUTH_REQUIRED: "請重新登入後再試。",
+    };
+    if (known[code]) return known[code];
     if (code === "REQUEST_TIMEOUT") return "連線逾時，請檢查網路後重試。";
     if (code === "REQUEST_CANCELLED") return "要求已取消。";
     if (!navigator.onLine) return "目前沒有網路連線；已保留畫面上的舊資料。";
     if (status === 401) return "登入狀態已失效，請重新登入後再試。";
-    if (status === 403) return "你沒有執行這項操作的權限。";
+    if (status === 403 || code === "42501") return "資料權限未通過；請重新登入，若仍失敗請聯絡管理員。";
     if (status === 404) return "找不到指定的資料。";
     if (status >= 500) return "服務暫時無法完成要求，請稍後再試。";
+    if (fallback && fallback !== code) return fallback;
+    if (status === 400) return "送出的內容不完整，請檢查後再試。";
     return "要求未完成，請稍後再試。";
   }
 

@@ -7,6 +7,7 @@ const feedbackState = {
   realtimeStop: null,
   refreshTimer: null,
   refreshThreadIds: new Set(),
+  requestId: 0,
 };
 
 const feedbackElements = {
@@ -119,7 +120,17 @@ function messageMarkup(message, { root = false } = {}) {
 }
 
 function replaceFeedbackMessage(updated) {
+  feedbackState.requestId += 1;
   feedbackState.messages = feedbackState.messages.map((message) => message.id === updated.id ? updated : message);
+}
+
+function mergeFeedbackThreads(messages = []) {
+  const roots = new Set(messages.map((message) => message.parent_id || message.id));
+  if (!roots.size) return;
+  feedbackState.requestId += 1;
+  feedbackState.messages = feedbackState.messages
+    .filter((message) => !roots.has(message.parent_id || message.id))
+    .concat(messages);
 }
 
 function renderFeedbackViews() {
@@ -151,6 +162,7 @@ async function toggleFeedbackVote(feedbackId, voteType) {
     if (result.message) replaceFeedbackMessage(result.message);
   } catch (error) {
     replaceFeedbackMessage(message);
+    window.libraryUX?.recordRollback?.("feedback-vote", error.code);
     toast(error.message, "error");
   } finally {
     feedbackState.votePending.delete(feedbackId);
@@ -169,13 +181,16 @@ function openThread(id, { updateUrl = true } = {}) {
 }
 
 async function loadFeedback({ preserveThread = true } = {}) {
+  const requestId = ++feedbackState.requestId;
   try {
     const result = await window.libraryApi.get("/feedback");
+    if (requestId !== feedbackState.requestId) return;
     feedbackState.messages = result.messages || [];
     rebuildThreads();
     renderFeedback();
     if (preserveThread && feedbackState.activeId) openThread(feedbackState.activeId, { updateUrl: false });
   } catch (error) {
+    if (requestId !== feedbackState.requestId) return;
     feedbackElements.summary.textContent = "暫時無法載入讀者回饋";
     toast(error.message, "error");
   }
@@ -187,8 +202,7 @@ async function refreshFeedbackThreads(ids) {
   if (threadIds.length > 4) return loadFeedback();
   try {
     const results = await Promise.all(threadIds.map((id) => window.libraryApi.get(`/feedback?thread=${encodeURIComponent(id)}`)));
-    feedbackState.messages = feedbackState.messages.filter((message) => !threadIds.includes(message.id) && !threadIds.includes(message.parent_id));
-    feedbackState.messages.push(...results.flatMap((result) => result.messages || []));
+    mergeFeedbackThreads(results.flatMap((result) => result.messages || []));
     renderFeedbackViews();
   } catch (error) {
     if (navigator.onLine) console.warn("Feedback delta refresh failed", error);
@@ -259,32 +273,37 @@ function wireFeedbackEvents() {
     if (!requireLogin()) return;
     const submit = document.getElementById("feedback-create-submit");
     submit.disabled = true;
+    window.libraryUX?.setBusy(feedbackElements.createForm, true, "正在建立討論");
     try {
-      await window.libraryApi.post("/feedback", { subject: document.getElementById("feedback-subject").value, content: document.getElementById("feedback-content").value });
+      const result = await window.libraryApi.post("/feedback", { subject: document.getElementById("feedback-subject").value.trim(), content: document.getElementById("feedback-content").value.trim() });
+      mergeFeedbackThreads(result.messages || []);
       feedbackElements.createDialog.close();
-      await loadFeedback({ preserveThread: false });
+      feedbackElements.createForm.reset();
+      renderFeedbackViews();
       toast("新討論已建立");
     } catch (error) { toast(error.message, "error"); }
-    finally { submit.disabled = false; }
+    finally { submit.disabled = false; window.libraryUX?.setBusy(feedbackElements.createForm, false); }
   });
   feedbackElements.replyForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!requireLogin() || !feedbackState.activeId) return;
     const submit = document.getElementById("feedback-reply-submit");
     submit.disabled = true;
+    window.libraryUX?.setBusy(feedbackElements.replyForm, true, "正在送出回覆");
     try {
-      await window.libraryApi.post("/feedback", { parentId: feedbackState.activeId, content: document.getElementById("feedback-reply-content").value });
+      const result = await window.libraryApi.post("/feedback", { parentId: feedbackState.activeId, content: document.getElementById("feedback-reply-content").value.trim() });
       feedbackElements.replyForm.reset();
-      await loadFeedback();
+      mergeFeedbackThreads(result.messages || []);
+      renderFeedbackViews();
       toast("回覆已送出");
     } catch (error) { toast(error.message, "error"); }
-    finally { submit.disabled = false; }
+    finally { submit.disabled = false; window.libraryUX?.setBusy(feedbackElements.replyForm, false); }
   });
   document.querySelectorAll("[data-dialog-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.dialogClose)?.close()));
   feedbackElements.threadDialog.addEventListener("close", () => { feedbackState.activeId = null; history.replaceState(null, "", location.pathname); });
   document.getElementById("login-button").addEventListener("click", () => window.libraryAuth.login(location.href).catch((error) => toast(error.message, "error")));
   document.getElementById("logout-button").addEventListener("click", () => window.libraryAuth.logout());
-  document.getElementById("user-toggle").addEventListener("click", () => { const dropdown = document.getElementById("user-dropdown"); dropdown.hidden = !dropdown.hidden; });
+  document.getElementById("user-toggle").addEventListener("click", (event) => { const dropdown = document.getElementById("user-dropdown"); dropdown.hidden = !dropdown.hidden; event.currentTarget.setAttribute("aria-expanded", String(!dropdown.hidden)); });
   window.addEventListener("library-auth-changed", (event) => { renderAuth(event.detail.user); loadFeedback(); });
 }
 

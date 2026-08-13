@@ -104,9 +104,17 @@ export async function createApp({ serveStatic = false } = {}) {
   app.use((req, res) => res.status(404).json({ error: "NOT_FOUND", message: "找不到指定的資源。" }));
   app.use((error, _req, res, _next) => {
     console.error("API error:", error);
-    const status = error.status || (String(error.message).endsWith("NOT_FOUND") ? 404 : 500);
-    const publicMessage = status >= 500 ? "服務暫時無法完成要求，請稍後再試。" : error.message;
-    res.status(status).json({ error: error.message || "INTERNAL_ERROR", message: publicMessage });
+    const code = String(error.code || error.message || "INTERNAL_ERROR");
+    const databaseStatus = code === "42501" ? 403
+      : code === "PGRST205" ? 503
+        : ["23503", "23514", "22P02"].includes(code) ? 400 : null;
+    const status = error.status || databaseStatus || (String(error.message).endsWith("NOT_FOUND") ? 404 : 500);
+    const publicMessage = code === "42501"
+      ? "資料權限未正確套用；請重新登入，若仍失敗請聯絡管理員。"
+      : code === "PGRST205"
+        ? "資料庫版本尚未完成更新，請聯絡管理員。"
+        : status >= 500 ? "服務暫時無法完成要求，請稍後再試。" : error.message;
+    res.status(status).json({ error: code, message: publicMessage });
   });
   return app;
 }

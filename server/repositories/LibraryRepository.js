@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 
 const ANNOTATION_CLUSTER_SIZE = 5;
+const ANNOTATION_COLUMNS = "id,book_id,author_id,chapter_href,cfi_range,anchor_offset_start,anchor_offset_end,cluster_key,quote,content,visibility,status,created_at,updated_at";
+const ANNOTATION_REPLY_COLUMNS = "id,annotation_id,parent_reply_id,author_id,content,status,created_at,updated_at";
+const REVIEW_COLUMNS = "id,book_id,author_id,content,status,created_at,updated_at";
 
 function number(value) {
   const parsed = Number(value);
@@ -169,10 +172,11 @@ export class LibraryRepository {
     this.requireBook(bookId);
     let query = this.db
       .from("book_annotations")
-      .select("*")
+      .select(ANNOTATION_COLUMNS)
       .eq("book_id", bookId)
       .eq("status", "active")
-      .order("created_at", { ascending: true });
+      .order("created_at", { ascending: true })
+      .limit(500);
     query = userId ? query.or(`visibility.eq.public,author_id.eq.${userId}`) : query.eq("visibility", "public");
     const { data, error } = await query;
     if (error) throw error;
@@ -185,16 +189,17 @@ export class LibraryRepository {
     const [votesResult, favoritesResult, repliesResult] = await Promise.all([
       this.db.rpc("get_library_annotation_vote_stats", { p_annotation_ids: ids }),
       this.db.rpc("get_library_annotation_favorite_stats", { p_annotation_ids: ids }),
-      this.db.from("book_annotation_replies").select("*").in("annotation_id", ids).eq("status", "active").order("created_at", { ascending: true }),
+      this.db.from("book_annotation_replies").select(ANNOTATION_REPLY_COLUMNS).in("annotation_id", ids).eq("status", "active").order("created_at", { ascending: true }).limit(2000),
     ]);
     if (votesResult.error) throw votesResult.error;
     if (favoritesResult.error) throw favoritesResult.error;
     if (repliesResult.error) throw repliesResult.error;
     const replies = repliesResult.data || [];
-    const replyVotesResult = replies.length
-      ? await this.db.rpc("get_library_annotation_reply_vote_stats", { p_reply_ids: replies.map((reply) => reply.id) })
-      : { data: [], error: null };
-    if (replyVotesResult.error) throw replyVotesResult.error;
+    const replyVoteResults = replies.length
+      ? await Promise.all(batches(replies.map((reply) => reply.id), 500)
+        .map((ids) => this.db.rpc("get_library_annotation_reply_vote_stats", { p_reply_ids: ids })))
+      : [];
+    for (const result of replyVoteResults) if (result.error) throw result.error;
     const profiles = await this.userRepository.publicProfiles([
       ...annotations.map((item) => item.author_id),
       ...replies.map((item) => item.author_id),
@@ -202,7 +207,7 @@ export class LibraryRepository {
     const votesByAnnotation = byKey(votesResult.data || [], "annotation_id");
     const favoritesByAnnotation = byKey(favoritesResult.data || [], "annotation_id");
     const repliesByAnnotation = new Map(ids.map((id) => [id, []]));
-    const replyVotes = byKey(replyVotesResult.data || [], "reply_id");
+    const replyVotes = byKey(replyVoteResults.flatMap((result) => result.data || []), "reply_id");
     for (const reply of replies) {
       const interaction = replyVotes.get(reply.id) || { score: 0, up_count: 0, down_count: 0, viewer_vote: null };
       repliesByAnnotation.get(reply.annotation_id)?.push({
@@ -261,7 +266,8 @@ export class LibraryRepository {
     if (!payload.cfi_range || !payload.content || !validOffsets) {
       throw Object.assign(new Error("INVALID_ANNOTATION"), { status: 400 });
     }
-    const { data, error } = await this.db.from("book_annotations").insert(payload).select("*").single();
+    const { data, error } = await this.db.from("book_annotations").insert(payload)
+      .select(ANNOTATION_COLUMNS).single();
     if (error) throw error;
     return (await this.hydrateAnnotations([data], userId))[0];
   }
@@ -320,7 +326,7 @@ export class LibraryRepository {
     };
     const { data, error } = await this.db.from("book_annotations")
       .update(payload).eq("id", annotationId).eq("author_id", userId).eq("status", "active")
-      .select("*").maybeSingle();
+      .select(ANNOTATION_COLUMNS).maybeSingle();
     if (error) throw error;
     if (!data) throw Object.assign(new Error("ANNOTATION_NOT_FOUND"), { status: 404 });
     return (await this.hydrateAnnotations([data], userId))[0];
@@ -414,7 +420,7 @@ export class LibraryRepository {
 
   async listReviews(bookId, userId = null) {
     this.requireBook(bookId);
-    const { data, error } = await this.db.from("book_reviews").select("*")
+    const { data, error } = await this.db.from("book_reviews").select(REVIEW_COLUMNS)
       .eq("book_id", bookId).eq("status", "active").order("created_at", { ascending: false }).limit(200);
     if (error) throw error;
     return this.hydrateReviews(data || [], userId);
@@ -430,10 +436,10 @@ export class LibraryRepository {
     let result;
     if (existing) {
       result = await this.db.from("book_reviews").update({ content, status: "active", updated_at: new Date().toISOString() })
-        .eq("id", existing.id).eq("author_id", userId).select("*").single();
+        .eq("id", existing.id).eq("author_id", userId).select(REVIEW_COLUMNS).single();
     } else {
       result = await this.db.from("book_reviews").insert({ id: crypto.randomUUID(), book_id: bookId, author_id: userId, content })
-        .select("*").single();
+        .select(REVIEW_COLUMNS).single();
     }
     if (result.error) throw result.error;
     return (await this.hydrateReviews([result.data], userId))[0];
@@ -450,7 +456,7 @@ export class LibraryRepository {
 
   async toggleReviewLike(reviewId, userId) {
     const { data: review, error: reviewError } = await this.db.from("book_reviews")
-      .select("*").eq("id", reviewId).eq("status", "active").single();
+      .select(REVIEW_COLUMNS).eq("id", reviewId).eq("status", "active").single();
     if (reviewError) throw reviewError;
     const { data: existing, error: findError } = await this.db.from("book_review_likes")
       .select("review_id").eq("review_id", reviewId).eq("user_id", userId).maybeSingle();
@@ -465,7 +471,7 @@ export class LibraryRepository {
 
   async toggleReviewFavorite(reviewId, userId) {
     const { data: review, error: reviewError } = await this.db.from("book_reviews")
-      .select("*").eq("id", reviewId).eq("status", "active").single();
+      .select(REVIEW_COLUMNS).eq("id", reviewId).eq("status", "active").single();
     if (reviewError) throw reviewError;
     const { data: existing, error: findError } = await this.db.from("book_review_favorites")
       .select("review_id").eq("review_id", reviewId).eq("user_id", userId).maybeSingle();
@@ -480,14 +486,14 @@ export class LibraryRepository {
 
   async userDashboard(userId) {
     const [favoritesResult, ratingsResult, progressResult, reviewsResult, annotationsResult, repliesResult, savedResult, savedReviewsResult] = await Promise.all([
-      this.db.from("book_favorites").select("book_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }),
-      this.db.from("book_ratings").select("book_id,rating,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }),
-      this.db.from("book_progress").select("book_id,cfi,chapter_href,percentage,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }),
-      this.db.from("book_reviews").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
-      this.db.from("book_annotations").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
-      this.db.from("book_annotation_replies").select("*").eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }),
-      this.db.from("book_annotation_favorites").select("annotation_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }),
-      this.db.from("book_review_favorites").select("review_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }),
+      this.db.from("book_favorites").select("book_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(200),
+      this.db.from("book_ratings").select("book_id,rating,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }).limit(200),
+      this.db.from("book_progress").select("book_id,cfi,chapter_href,percentage,updated_at").eq("user_id", userId).order("updated_at", { ascending: false }).limit(200),
+      this.db.from("book_reviews").select(REVIEW_COLUMNS).eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }).limit(200),
+      this.db.from("book_annotations").select(ANNOTATION_COLUMNS).eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }).limit(200),
+      this.db.from("book_annotation_replies").select(ANNOTATION_REPLY_COLUMNS).eq("author_id", userId).eq("status", "active").order("updated_at", { ascending: false }).limit(200),
+      this.db.from("book_annotation_favorites").select("annotation_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(200),
+      this.db.from("book_review_favorites").select("review_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(200),
     ]);
     for (const result of [favoritesResult, ratingsResult, progressResult, reviewsResult, annotationsResult, repliesResult, savedResult, savedReviewsResult]) {
       if (result.error) throw result.error;
@@ -498,13 +504,13 @@ export class LibraryRepository {
     const relatedIds = [...new Set([...savedIds, ...replyAnnotationIds])];
     let relatedAnnotations = [];
     if (relatedIds.length) {
-      const { data, error } = await this.db.from("book_annotations").select("*").in("id", relatedIds).eq("status", "active");
+      const { data, error } = await this.db.from("book_annotations").select(ANNOTATION_COLUMNS).in("id", relatedIds).eq("status", "active");
       if (error) throw error;
       relatedAnnotations = data || [];
     }
     let savedReviewRows = [];
     if (savedReviewIds.length) {
-      const { data, error } = await this.db.from("book_reviews").select("*").in("id", savedReviewIds).eq("status", "active");
+      const { data, error } = await this.db.from("book_reviews").select(REVIEW_COLUMNS).in("id", savedReviewIds).eq("status", "active");
       if (error) throw error;
       savedReviewRows = data || [];
     }
@@ -552,7 +558,7 @@ export class LibraryRepository {
   async listFeedback(userId = null, rootId = null) {
     let query = this.db
       .from("library_feedback")
-      .select("*")
+      .select("id,parent_id,author_id,book_id,subject,content,status,created_at,updated_at")
       .eq("status", "active")
       .order("created_at", { ascending: false })
       .limit(200);
@@ -608,8 +614,10 @@ export class LibraryRepository {
       const { data: parent, error } = await this.db.from("library_feedback").select("id").eq("id", input.parentId).eq("status", "active").single();
       if (error || !parent) throw Object.assign(new Error("FEEDBACK_NOT_FOUND"), { status: 404 });
     }
+    const id = crypto.randomUUID();
+    const rootId = input.parentId || id;
     const { error } = await this.db.from("library_feedback").insert({
-      id: crypto.randomUUID(),
+      id,
       author_id: userId,
       parent_id: input.parentId || null,
       book_id: input.bookId || null,
@@ -617,6 +625,8 @@ export class LibraryRepository {
       content,
     });
     if (error) throw error;
-    return this.listFeedback(userId);
+    // Return only the affected thread. The browser can merge this stable,
+    // server-authoritative slice without downloading every discussion again.
+    return this.listFeedback(userId, rootId);
   }
 }

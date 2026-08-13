@@ -1,3 +1,6 @@
+const SETTINGS_COLUMNS = "user_id,notify_annotation_replies,notify_annotation_likes,notify_annotation_favorites,notify_review_likes,notify_feedback_replies,annotation_visibility_threshold,created_at,updated_at";
+const NOTIFICATION_COLUMNS = "id,user_id,actor_id,type,book_id,target_type,target_id,message,read_at,created_at";
+
 export class UserRepository {
   constructor(db) {
     this.db = db;
@@ -12,9 +15,11 @@ export class UserRepository {
   async publicProfiles(userIds) {
     const ids = [...new Set(userIds.filter(Boolean))];
     if (!ids.length) return new Map();
-    const { data, error } = await this.db.rpc("get_library_public_profiles", { p_user_ids: ids });
-    if (error) throw error;
-    return new Map((data || []).map((user) => [user.id, user]));
+    const groups = [];
+    for (let index = 0; index < ids.length; index += 400) groups.push(ids.slice(index, index + 400));
+    const results = await Promise.all(groups.map((group) => this.db.rpc("get_library_public_profiles", { p_user_ids: group })));
+    for (const result of results) if (result.error) throw result.error;
+    return new Map(results.flatMap((result) => result.data || []).map((user) => [user.id, user]));
   }
 
   async updateProfile(publicDisplayName) {
@@ -26,10 +31,10 @@ export class UserRepository {
   }
 
   async settings(userId) {
-    let { data, error } = await this.db.from("library_user_settings").select("*").eq("user_id", userId).maybeSingle();
+    let { data, error } = await this.db.from("library_user_settings").select(SETTINGS_COLUMNS).eq("user_id", userId).maybeSingle();
     if (error) throw error;
     if (!data) {
-      const created = await this.db.from("library_user_settings").insert({ user_id: userId }).select("*").single();
+      const created = await this.db.from("library_user_settings").insert({ user_id: userId }).select(SETTINGS_COLUMNS).single();
       if (created.error) throw created.error;
       data = created.data;
     }
@@ -59,13 +64,13 @@ export class UserRepository {
       }
     }
     const { data, error } = await this.db.from("library_user_settings").update(payload)
-      .eq("user_id", userId).select("*").single();
+      .eq("user_id", userId).select(SETTINGS_COLUMNS).single();
     if (error) throw error;
     return data;
   }
 
   async notifications(userId, limit = 60) {
-    const { data, error } = await this.db.from("library_notifications").select("*")
+    const { data, error } = await this.db.from("library_notifications").select(NOTIFICATION_COLUMNS)
       .eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
     if (error) throw error;
     return data || [];

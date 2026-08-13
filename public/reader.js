@@ -3,6 +3,23 @@ const bookId = params.get("id");
 const requestedNoteId = params.get("note");
 const ANNOTATION_CLUSTER_SIZE = 5;
 const PUBLIC_ANNOTATION_RANK_WINDOW = 20;
+const READER_THEMES = new Set(["publisher", "paper", "night"]);
+const READER_THEME_CSS = {
+  publisher: "",
+  paper: `
+    :root { color-scheme: light; }
+    body { color:#24231f !important; background:#f8f2e8 !important; font-family:Georgia,"Noto Serif TC",serif !important; padding:0 3% !important; }
+    p { line-height:2.05 !important; }
+    a { color:#8e432e !important; }
+  `,
+  night: `
+    :root { color-scheme: dark; }
+    body { color:#d8d4ca !important; background:#151916 !important; font-family:Georgia,"Noto Serif TC",serif !important; padding:0 3% !important; }
+    p, li, blockquote { color:#d8d4ca !important; line-height:2.05 !important; }
+    h1, h2, h3, h4, h5, h6 { color:#f0e9dc !important; }
+    a { color:#d59b70 !important; }
+  `,
+};
 const readerState = {
   bookRecord: null,
   epub: null,
@@ -20,14 +37,17 @@ const readerState = {
   annotationRealtimeStop: null,
   annotationRefreshTimer: null,
   annotationThreshold: 50,
+  annotationRequestId: 0,
   pendingProgress: null,
   progressSavedOnce: false,
   progressSaveQueue: Promise.resolve(),
   activeThreadNoteId: null,
   replySort: "best",
   replyParentId: null,
+  replyDrafts: new Map(),
   annotationMutationPending: new Set(),
   bubbleTap: { id: null, at: 0 },
+  theme: "publisher",
 };
 
 function escapeHtml(value = "") {
@@ -215,27 +235,41 @@ function registerThemes() {
     },
     "p, li, blockquote": { "line-height": "2.02 !important" },
   });
-  themes.register("publisher", {});
-  themes.register("paper", {
-    body: { color: "#24231f !important", background: "#f8f2e8 !important", "font-family": 'Georgia, "Noto Serif TC", serif !important', padding: "0 3% !important" },
-    p: { "line-height": "2.05 !important" },
-    a: { color: "#8e432e !important" },
-  });
-  themes.register("night", {
-    body: { color: "#d8d4ca !important", background: "#151916 !important", "font-family": 'Georgia, "Noto Serif TC", serif !important', padding: "0 3% !important" },
-    p: { color: "#d8d4ca !important", "line-height": "2.05 !important" },
-    h1: { color: "#f0e9dc !important" }, h2: { color: "#f0e9dc !important" }, h3: { color: "#f0e9dc !important" },
-    a: { color: "#d59b70 !important" },
-  });
-  themes.select(localStorage.getItem("mystery-library:theme") || "publisher");
+  const savedTheme = localStorage.getItem("mystery-library:theme");
+  readerState.theme = READER_THEMES.has(savedTheme) ? savedTheme : "publisher";
   const savedSize = Number(localStorage.getItem("mystery-library:font-size"));
   if (savedSize >= 80 && savedSize <= 160) readerState.fontSize = savedSize;
   themes.fontSize(`${readerState.fontSize}%`);
 }
 
+function applyThemeToContents(contents, theme = readerState.theme) {
+  const head = contents?.document?.head;
+  if (!head) return;
+  let style = contents.document.getElementById("mystery-reader-theme");
+  if (!style) {
+    style = contents.document.createElement("style");
+    style.id = "mystery-reader-theme";
+    head.append(style);
+  }
+  // Replacing one style node avoids epub.js retaining every previously
+  // selected theme and letting an older, later-injected rule win forever.
+  style.textContent = READER_THEME_CSS[theme] || "";
+  contents.document.body?.setAttribute("data-reader-theme", theme);
+}
+
+function applyReaderTheme(theme) {
+  const nextTheme = READER_THEMES.has(theme) ? theme : "publisher";
+  readerState.theme = nextTheme;
+  for (const contents of readerState.rendition?.getContents?.() || []) applyThemeToContents(contents, nextTheme);
+  document.body.dataset.theme = nextTheme;
+  document.getElementById("theme-select").value = nextTheme;
+  return nextTheme;
+}
+
 function wireRenditionEvents() {
   readerState.rendition.hooks.content.register((contents) => {
     contents.document.addEventListener("keydown", handlePageKey);
+    applyThemeToContents(contents);
     installBubbleStyles(contents);
     setTimeout(() => renderAnnotationBubbles(), 0);
   });
@@ -539,13 +573,14 @@ function annotationThreadCard(note) {
   const votePending = readerState.annotationMutationPending.has(`note-vote:${note.id}`);
   const favoritePending = readerState.annotationMutationPending.has(`note-favorite:${note.id}`);
   const replyPending = readerState.annotationMutationPending.has(`note-reply:${note.id}`);
+  const replyDraft = readerState.replyDrafts.get(note.id) || "";
   return `<article class="thread-note ${note.visibility}" data-thread-note-id="${note.id}">
     <div class="annotation-author"><img src="${escapeHtml(avatarFor(note.author))}" alt=""><strong>${escapeHtml(note.author?.public_display_name || "讀者")}</strong>${["admin", "moderator"].includes(note.author?.role) ? "<em>館員</em>" : ""}<time>${new Date(note.created_at).toLocaleString("zh-TW")}</time></div>
     ${note.quote ? `<blockquote>${escapeHtml(note.quote)}</blockquote>` : ""}
     <p>${escapeHtml(note.content)}</p>
     <div class="note-actions"><button class="${note.viewerVote === "up" ? "active" : ""}" data-note-vote="up" data-id="${note.id}"${votePending ? " disabled" : ""}>▲ ${Number(note.upCount) || 0}</button><button class="${note.viewerVote === "down" ? "active" : ""}" data-note-vote="down" data-id="${note.id}"${votePending ? " disabled" : ""}>▼ ${Number(note.downCount) || 0}</button><span>淨分 ${note.score >= 0 ? "+" : ""}${note.score}</span>${note.visibility === "public" ? `<button class="${note.viewerFavorite ? "active" : ""}" data-note-favorite="${note.id}"${favoritePending ? " disabled" : ""}>${note.viewerFavorite ? "♥ 已收藏" : "♡ 收藏"} ${note.favoriteCount}</button>` : '<span>私人標注</span>'}</div>
     <div class="thread-note-replies"><div class="thread-reply-heading"><h3>${note.replies?.length || 0} 則${note.visibility === "private" ? "私人補充" : "回覆"}</h3><div role="group" aria-label="回覆排序"><button type="button" data-reply-sort="best" class="${readerState.replySort === "best" ? "active" : ""}" aria-pressed="${readerState.replySort === "best"}">最佳</button><button type="button" data-reply-sort="latest" class="${readerState.replySort === "latest" ? "active" : ""}" aria-pressed="${readerState.replySort === "latest"}">最新</button></div></div>${replies.map((reply) => annotationReplyMarkup(reply)).join("") || '<p class="muted">尚無回覆。</p>'}</div>
-    <form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>
+    <form class="reply-form thread-reply-form" data-reply-form="${note.id}" data-parent-reply-id="${escapeHtml(parentReply?.id || "")}">${parentReply ? `<div class="reply-parent-context">正在回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}<button type="button" data-cancel-reply>取消</button></div>` : ""}<input maxlength="2000" aria-label="回覆標注" value="${escapeHtml(replyDraft)}" placeholder="${parentReply ? `回覆 ${escapeHtml(parentReply.author?.public_display_name || "讀者")}…` : note.visibility === "private" ? "補充這則私人標注…" : "加入這個討論串…"}"${replyPending ? " disabled" : ""}><button type="submit"${replyPending ? " disabled" : ""}>送出</button></form>
   </article>`;
 }
 
@@ -573,9 +608,11 @@ function openAnnotationThread(noteId, { reset = false } = {}) {
 }
 
 async function loadAnnotations() {
+  const requestId = ++readerState.annotationRequestId;
   try {
     const result = await window.libraryApi.get(`/books/${encodeURIComponent(bookId)}/annotations`);
-    readerState.annotations = result.annotations;
+    if (requestId !== readerState.annotationRequestId) return;
+    readerState.annotations = result.annotations || [];
     renderAnnotationBubbles();
     if (readerState.activeThreadNoteId && document.getElementById("annotation-thread-dialog").open) openAnnotationThread(readerState.activeThreadNoteId);
     const requested = !readerState.requestedNoteHandled && requestedNoteId && readerState.annotations.find((note) => note.id === requestedNoteId);
@@ -585,9 +622,36 @@ async function loadAnnotations() {
       openAnnotationThread(requested.id);
     }
   } catch (error) {
+    if (requestId !== readerState.annotationRequestId) return;
     console.warn("Unable to load annotations.", error);
     toast(error.message, "error");
   }
+}
+
+function renderAnnotationState() {
+  renderAnnotationBubbles();
+  const dialog = document.getElementById("annotation-thread-dialog");
+  if (readerState.activeThreadNoteId && dialog?.open) openAnnotationThread(readerState.activeThreadNoteId);
+}
+
+function replaceAnnotation(updated) {
+  if (!updated?.id) return;
+  // A local mutation is newer than any list request that was already in
+  // flight, so prevent that older snapshot from overwriting this state.
+  readerState.annotationRequestId += 1;
+  const index = readerState.annotations.findIndex((note) => note.id === updated.id);
+  if (index === -1) readerState.annotations = [...readerState.annotations, updated];
+  else readerState.annotations = readerState.annotations.map((note) => note.id === updated.id ? updated : note);
+}
+
+function optimisticVote(item, nextVote) {
+  let upCount = Number(item?.upCount) || 0;
+  let downCount = Number(item?.downCount) || 0;
+  if (item?.viewerVote === "up") upCount = Math.max(0, upCount - 1);
+  if (item?.viewerVote === "down") downCount = Math.max(0, downCount - 1);
+  if (nextVote === "up") upCount += 1;
+  if (nextVote === "down") downCount += 1;
+  return { ...item, upCount, downCount, score: upCount - downCount, viewerVote: nextVote === "none" ? null : nextVote };
 }
 
 function syncAnnotationRealtime(active) {
@@ -610,7 +674,7 @@ async function submitAnnotation(event) {
   const button = document.getElementById("annotation-submit");
   button.disabled = true;
   try {
-    await window.libraryApi.post(`/books/${encodeURIComponent(bookId)}/annotations`, {
+    const result = await window.libraryApi.post(`/books/${encodeURIComponent(bookId)}/annotations`, {
       ...readerState.selected,
       content: document.getElementById("annotation-content").value,
       visibility: document.getElementById("annotation-public").checked ? "public" : "private",
@@ -618,7 +682,8 @@ async function submitAnnotation(event) {
     document.getElementById("annotation-dialog").close();
     document.getElementById("selection-action").hidden = true;
     readerState.selected = null;
-    await loadAnnotations();
+    replaceAnnotation(result.annotation);
+    renderAnnotationState();
     toast("標注已儲存");
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
@@ -629,15 +694,22 @@ async function voteAnnotation(id, voteType) {
   const pendingKey = `note-vote:${id}`;
   if (readerState.annotationMutationPending.has(pendingKey)) return;
   const note = readerState.annotations.find((item) => item.id === id);
+  if (!note) return;
+  const nextVote = note.viewerVote === voteType ? "none" : voteType;
   readerState.annotationMutationPending.add(pendingKey);
-  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  replaceAnnotation(optimisticVote(note, nextVote));
+  renderAnnotationState();
   try {
-    await window.libraryApi.post(`/annotations/${id}/vote`, { voteType: note?.viewerVote === voteType ? "none" : voteType });
-    await loadAnnotations();
-  } catch (error) { toast(error.message, "error"); }
+    const result = await window.libraryApi.post(`/annotations/${encodeURIComponent(id)}/vote`, { voteType: nextVote });
+    replaceAnnotation(result.annotation);
+  } catch (error) {
+    replaceAnnotation(note);
+    window.libraryUX?.recordRollback?.("annotation-vote", error.code);
+    toast(error.message, "error");
+  }
   finally {
     readerState.annotationMutationPending.delete(pendingKey);
-    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+    renderAnnotationState();
   }
 }
 
@@ -645,15 +717,26 @@ async function favoriteAnnotation(id) {
   if (!ensureLogin()) return;
   const pendingKey = `note-favorite:${id}`;
   if (readerState.annotationMutationPending.has(pendingKey)) return;
+  const note = readerState.annotations.find((item) => item.id === id);
+  if (!note) return;
   readerState.annotationMutationPending.add(pendingKey);
-  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  replaceAnnotation({
+    ...note,
+    viewerFavorite: !note.viewerFavorite,
+    favoriteCount: Math.max(0, Number(note.favoriteCount || 0) + (note.viewerFavorite ? -1 : 1)),
+  });
+  renderAnnotationState();
   try {
-    await window.libraryApi.post(`/annotations/${id}/favorite`);
-    await loadAnnotations();
-  } catch (error) { toast(error.message, "error"); }
+    const result = await window.libraryApi.post(`/annotations/${encodeURIComponent(id)}/favorite`);
+    replaceAnnotation(result.annotation);
+  } catch (error) {
+    replaceAnnotation(note);
+    window.libraryUX?.recordRollback?.("annotation-favorite", error.code);
+    toast(error.message, "error");
+  }
   finally {
     readerState.annotationMutationPending.delete(pendingKey);
-    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+    renderAnnotationState();
   }
 }
 
@@ -662,14 +745,29 @@ async function replyAnnotation(id, content, parentReplyId = null) {
   const pendingKey = `note-reply:${id}`;
   if (readerState.annotationMutationPending.has(pendingKey)) return;
   readerState.annotationMutationPending.add(pendingKey);
+  readerState.replyDrafts.set(id, content);
+  renderAnnotationState();
   try {
-    await window.libraryApi.post(`/annotations/${id}/replies`, { content, parentReplyId });
+    const result = await window.libraryApi.post(`/annotations/${encodeURIComponent(id)}/replies`, { content: content.trim(), parentReplyId });
     readerState.replyParentId = null;
-    await loadAnnotations();
+    readerState.replyDrafts.delete(id);
+    replaceAnnotation(result.annotation);
     toast("回覆已送出");
     return true;
-  } catch (error) { toast(error.message, "error"); return false; }
-  finally { readerState.annotationMutationPending.delete(pendingKey); }
+  } catch (error) {
+    window.libraryUX?.recordRollback?.("annotation-reply", error.code);
+    toast(error.message, "error");
+    return false;
+  }
+  finally {
+    readerState.annotationMutationPending.delete(pendingKey);
+    renderAnnotationState();
+    if (readerState.replyDrafts.has(id)) {
+      [...document.querySelectorAll("#annotation-thread-content [data-thread-note-id]")]
+        .find((node) => node.dataset.threadNoteId === id)
+        ?.querySelector(".thread-reply-form input")?.focus();
+    }
+  }
 }
 
 async function voteAnnotationReply(replyId, voteType) {
@@ -677,22 +775,29 @@ async function voteAnnotationReply(replyId, voteType) {
   const pendingKey = `reply-vote:${replyId}`;
   if (readerState.annotationMutationPending.has(pendingKey)) return;
   const reply = readerState.annotations.flatMap((note) => note.replies || []).find((item) => item.id === replyId);
+  const note = readerState.annotations.find((item) => item.replies?.some((candidate) => candidate.id === replyId));
+  if (!reply || !note) return;
+  const nextVote = reply.viewerVote === voteType ? "none" : voteType;
   readerState.annotationMutationPending.add(pendingKey);
-  if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+  replaceAnnotation({ ...note, replies: note.replies.map((item) => item.id === replyId ? optimisticVote(item, nextVote) : item) });
+  renderAnnotationState();
   try {
-    await window.libraryApi.post(`/annotation-replies/${encodeURIComponent(replyId)}/vote`, { voteType: reply?.viewerVote === voteType ? "none" : voteType });
-    await loadAnnotations();
-  } catch (error) { toast(error.message, "error"); }
+    const result = await window.libraryApi.post(`/annotation-replies/${encodeURIComponent(replyId)}/vote`, { voteType: nextVote });
+    replaceAnnotation(result.annotation);
+  } catch (error) {
+    replaceAnnotation(note);
+    window.libraryUX?.recordRollback?.("annotation-reply-vote", error.code);
+    toast(error.message, "error");
+  }
   finally {
     readerState.annotationMutationPending.delete(pendingKey);
-    if (readerState.activeThreadNoteId) openAnnotationThread(readerState.activeThreadNoteId);
+    renderAnnotationState();
   }
 }
 
 function selectTheme(theme) {
-  readerState.rendition?.themes.select(theme);
-  localStorage.setItem("mystery-library:theme", theme);
-  document.body.dataset.theme = theme;
+  const nextTheme = applyReaderTheme(theme);
+  localStorage.setItem("mystery-library:theme", nextTheme);
 }
 
 function wireControls() {
@@ -782,7 +887,7 @@ async function initialize() {
     const record = await loadBookRecord();
     await initializeEpub(record);
     await loadAnnotations();
-    document.getElementById("theme-select").value = localStorage.getItem("mystery-library:theme") || "publisher";
+    applyReaderTheme(readerState.theme);
     const savedThreshold = localStorage.getItem("mystery-library:annotation-threshold");
     readerState.annotationThreshold = Math.max(0, Math.min(100, Number(savedThreshold ?? 50)));
     if (window.libraryAuth.user) {
